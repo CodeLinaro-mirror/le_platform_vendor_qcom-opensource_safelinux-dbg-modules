@@ -2,13 +2,15 @@ M=$(PWD)
 
 INSPATH ?= $(KDIR)
 
-EXMOD_TOPDIR := $(M)
-export EXMOD_TOPDIR
+obj-m := minidump/
 
 all: clean modules
+
+KERNEL_VERSION ?= $(shell uname -r)
+KDIR ?= /lib/modules/$(KERNEL_VERSION)/build
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(M) clean
 
 %:
-	$(MAKE) -C $(KDIR) INSTALL_MOD_PATH=$(INSPATH) M=$(M) $@
+	$(MAKE) -C $(KDIR) M=$(M) $@
