@@ -162,6 +162,9 @@ module_param_array(key_modules, charp, &n_modump, 0644);
 #endif	/* CONFIG_MODULES */
 #endif
 
+void *kmsg_buf;
+unsigned long kmsg_dump_sz  = (10 * (1 << 12));
+
 static int register_stack_entry(struct md_region *ksp_entry, u64 sp, u64 size)
 {
 	struct page *sp_page;
@@ -1330,8 +1333,66 @@ static void register_pstore_info(void)
 }
 #endif
 
+static void md_kmsg_dump(struct kmsg_dumper *dumper,
+			enum kmsg_dump_reason reason)
+{
+	struct kmsg_dump_iter iter;
+	const char      *why;
+	char *dst = kmsg_buf;
+	size_t dst_size = kmsg_dump_sz;
+	int header_size;
+
+	why = kmsg_dump_reason_str(reason);
+
+	kmsg_dump_rewind(&iter);
+
+	/* Write dump header. */
+	header_size = snprintf(dst, dst_size, "MiniDump: %s\n", why);
+	dst_size -= header_size;
+
+	if (!kmsg_dump_get_buffer(&iter, true, dst + header_size,
+				  dst_size, NULL))
+		pr_crit("No Dump received\n");
+}
+
+static struct kmsg_dumper md_dumper = {
+	.dump = md_kmsg_dump,
+};
+
+
+static int md_kmsg_dump_register(void)
+{
+	int ret;
+	struct md_region md_entry;
+
+	ret = kmsg_dump_register(&md_dumper);
+	if (ret < 0)
+		return ret;
+
+        strscpy(md_entry.name, "KMSG", sizeof(md_entry.name));
+        md_entry.virt_addr = (uintptr_t)kmsg_buf;
+        md_entry.phys_addr = virt_to_phys(kmsg_buf);
+        md_entry.size = kmsg_dump_sz;
+
+        ret = msm_minidump_add_region(&md_entry);
+	if (ret < 0)
+		kmsg_dump_unregister(&md_dumper);
+	return ret;
+}
+
 int msm_minidump_log_init(void)
 {
+	int ret;
+
+	kmsg_buf = kzalloc(kmsg_dump_sz, GFP_KERNEL);
+
+	if (!kmsg_buf)
+		return -ENOMEM;
+
+	ret = md_kmsg_dump_register();
+	if (ret < 0)
+		return ret;
+
 	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
 #ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
 	register_current_stack();
@@ -1353,3 +1414,8 @@ int msm_minidump_log_init(void)
 #endif
 	return 0;
 }
+
+module_param(kmsg_dump_sz, ulong, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(initial_descriptor_timeout,
+                "initial 64-byte descriptor request timeout in milliseconds "
+                "(default 5000 - 5.0 seconds)");
