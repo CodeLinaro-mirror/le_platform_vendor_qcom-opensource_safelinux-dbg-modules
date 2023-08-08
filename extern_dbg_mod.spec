@@ -21,6 +21,9 @@ For building external kernel modules mentioned as following:
 minidump: to dump certain regions of the RAM, for debugging, as a
 result of panic.
 
+kaslr_store: to store the kaslr-offset, in order to facilitate ramdump
+analysis.
+
 %prep
 %setup -q
 echo "# Load minidump.ko at boot" > minidump.conf
@@ -43,7 +46,9 @@ depmod %{kversion}
 %files
 %{_sysconfdir}/modules-load.d/minidump.conf
 /lib/modules/%{kversion}/extra/minidump/minidump.ko
+/lib/modules/%{kversion}/extra/kaslr_store/kaslr_store.ko
 
 %changelog
-* Fri Jun 30 2023 Parikshit Pareek <quic_ppareek@quicinc.com> 1.0
+* Tue Aug 08 2023 Parikshit Pareek <quic_ppareek@quicinc.com> 1.0
 - First commit!
+- Added kaslr support.
