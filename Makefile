@@ -3,6 +3,7 @@ M=$(PWD)
 INSPATH ?= $(KDIR)
 
 obj-m := minidump/
+obj-m += kaslr_store/
 
 all: clean modules
 
