@@ -29,6 +29,11 @@ to register and allocate respective dump regions. At the time of deadlocks
 or cpu hangs these dump regions are captured to give a snapshot of the 
 system at the time of the crash.
 
+xbl_log: This drivers provides a way to print XBL logs on the console. To
+do so, it provides a debugfs entry which captures the logs stored
+in this reserved memory region. This entry can now be used to read
+and print the XBL logs to console.
+
 %prep
 %setup -qn %{name}
 
@@ -47,8 +52,12 @@ depmod %{kversion}
 /lib/modules/%{kversion}/extra/minidump/minidump.ko
 /lib/modules/%{kversion}/extra/kaslr_store/kaslr_store.ko
 /lib/modules/%{kversion}/extra/memory_dump_v2/memory_dump_v2.ko
+/lib/modules/%{kversion}/extra/xbl_log/dump_boot_log.ko
 
 %changelog
+* Mon Oct 30 2023 Ninad Naik <quic_ninanaik@quicinc.com> 1.0
+- Add xbl_log support
+
 * Tue Aug 29 2023 Sankalp Negi <quic_snegi@quicinc.com> 1.0
 - Add memory_dump_v2 support
 
