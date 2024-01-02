@@ -5,6 +5,7 @@ export TOP_DIR
 obj-m := minidump/
 obj-m += kaslr_store/
 obj-m += memory_dump_v2/
+obj-m += xbl_log/
 
 all: clean modules
 
