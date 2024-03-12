@@ -858,9 +858,7 @@ static int msm_minidump_add_header(void)
 		}
 	} else {
 		mdreg = &minidump_table->md_regions[0];
-		pr_info("owl: KELF_HDR copying\n");
 		strscpy(mdreg->name, "KELF_HDR", sizeof(mdreg->name));
-		pr_info("owl: KELF_HDR copied\n");
 		mdreg->region_base_address = virt_to_phys(minidump_elfheader.ehdr);
 		mdreg->region_size = elfh_size;
 	}
@@ -918,9 +916,7 @@ static int msm_minidump_add_header(void)
 
 	/* 4th section is linux banner */
 	banner = (char *)ehdr + strtbl_off + MAX_STRTBL_SIZE;
-	pr_info("owl: linux banner copied copied\n");
 	strscpy(banner, linux_banner, MAX_STRTBL_SIZE);
-	pr_info("owl: linux banner copied copied\n");
 	shdr->sh_type = SHT_PROGBITS;
 	shdr->sh_offset = (elf_addr_t)(strtbl_off + MAX_STRTBL_SIZE);
 	shdr->sh_size = strlen(linux_banner) + 1;
@@ -968,10 +964,8 @@ static int msm_minidump_driver_probe(struct platform_device *pdev)
 	is_rm_minidump =
 		of_device_is_compatible(pdev->dev.of_node, "qcom,minidump-rm");
 
-	pr_info("owl: %s \n",__func__);
 
 	if (is_rm_minidump) {
-		pr_info("owl: %s rm minidump\n",__func__);
 		ret = gh_rm_minidump_get_info();
 		if (ret < 0) {
 			pr_err("Get minidump info failed ret=%d\n", ret);
@@ -991,10 +985,8 @@ static int msm_minidump_driver_probe(struct platform_device *pdev)
 		}
 	} else {
 		/* Get Minidump table */
-		pr_info("owl: %s getting toc\n",__func__);
 		md_global_toc = qcom_smem_get(QCOM_SMEM_HOST_ANY,
 					      SBL_MINIDUMP_SMEM_ID, &size);
-		pr_info("owl: %s got toc\n",__func__);
 		if (IS_ERR_OR_NULL(md_global_toc)) {
 			pr_err("SMEM is not initialized\n");
 			return PTR_ERR(md_global_toc);
@@ -1034,7 +1026,6 @@ static int msm_minidump_driver_probe(struct platform_device *pdev)
 
 	/* First entry would be ELF header */
 	msm_minidump_add_header();
-	pr_info("owl: %s added header\n",__func__);
 	/* Add pending entries to HLOS TOC */
 	spin_lock_irqsave(&mdt_lock, flags);
 	/* only need initialize when use smem */
@@ -1074,9 +1065,7 @@ static int msm_minidump_driver_probe(struct platform_device *pdev)
 	/* All updates above should be visible, before init completes */
 	smp_store_release(&md_init_done, true);
 
-#if IS_MODULE(CONFIG_QCOM_MINIDUMP)
 	msm_minidump_log_init();
-#endif
 
 	pr_info("Enabled with max number of regions %d\n",
 		CONFIG_MINIDUMP_MAX_ENTRIES);
