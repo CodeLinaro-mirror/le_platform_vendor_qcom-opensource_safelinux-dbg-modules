@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/cache.h>
@@ -163,7 +163,8 @@ module_param_array(key_modules, charp, &n_modump, 0644);
 #endif
 
 void *kmsg_buf;
-unsigned long kmsg_dump_sz  = (10 * (1 << 12));
+/* Allocate 128KB for DMESG buffer as default value */
+unsigned long kmsg_dump_sz  = (128 * 1024);
 
 static int register_stack_entry(struct md_region *ksp_entry, u64 sp, u64 size)
 {
