@@ -1,6 +1,8 @@
 # If kversion isn't defined on the rpmbuild line, define it here.
 %{!?kversion: %define kversion %(uname -r)}
 
+%{!?with_oot_debug: %define with_oot_debug 0}
+
 %define kmod_name external-dbg
 %define debug_package %{nil}
 
@@ -38,21 +40,39 @@ and print the XBL logs to console.
 %setup -qn %{name}
 
 %build
-make KERNEL_VERSION=%{kversion}  modules
+%if %{with_oot_debug}
+make KERNEL_VERSION=%{kversion}+debug modules
+%else
+make KERNEL_VERSION=%{kversion} modules
+%endif
 
 %install
 rm -rf $RPM_BUILD_ROOT
+%if %{with_oot_debug}
+make KERNEL_VERSION=%{kversion}+debug INSTALL_MOD_PATH="$RPM_BUILD_ROOT" modules_install
+rm -rf "$RPM_BUILD_ROOT/lib/modules/%{kversion}+debug/modules."*
+%else
 make KERNEL_VERSION=%{kversion} INSTALL_MOD_PATH="$RPM_BUILD_ROOT" modules_install
 rm -rf "$RPM_BUILD_ROOT/lib/modules/%{kversion}/modules."*
+%endif
 
 %post
+%if %{with_oot_debug}
+depmod %{kversion}+debug
+%else
 depmod %{kversion}
+%endif
 
 %files
-/lib/modules/%{kversion}/extra/minidump/minidump.ko
-/lib/modules/%{kversion}/extra/kaslr_store/kaslr_store.ko
-/lib/modules/%{kversion}/extra/memory_dump_v2/memory_dump_v2.ko
-/lib/modules/%{kversion}/extra/xbl_log/dump_boot_log.ko
+%if %{with_oot_debug}
+%define kernel_module_path /lib/modules/%{kversion}+debug
+%else
+%define kernel_module_path /lib/modules/%{kversion}
+%endif
+%{kernel_module_path}/extra/minidump/minidump.ko
+%{kernel_module_path}/extra/kaslr_store/kaslr_store.ko
+%{kernel_module_path}/extra/memory_dump_v2/memory_dump_v2.ko
+%{kernel_module_path}/extra/xbl_log/dump_boot_log.ko
 
 %changelog
 * Mon Oct 30 2023 Ninad Naik <quic_ninanaik@quicinc.com> 1.0

@@ -97,7 +97,6 @@ static int map_addr_range(struct device_node **parent, const char *name,
 			dev_err(xbl_data->dev, "%s: mem remap failed\n", name);
 			return -ENOMEM;
 		}
-		tmp_sz = strlen(tmp_buf);
 		xbl_data->buf_size += tmp_sz;
 		break;
 	case IO_MEM:
