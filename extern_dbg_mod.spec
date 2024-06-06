@@ -6,6 +6,14 @@
 %define kmod_name external-dbg
 %define debug_package %{nil}
 
+%if %{with_oot_debug}
+    %define kpackage kernel-automotive-debug
+    %define kversion_with_debug %{kversion}+debug
+%else
+    %define kversion_with_debug %{kversion}
+    %define kpackage kernel-automotive
+%endif
+
 Name: kernel-module-%{kmod_name}
 Version: 1.0
 Release:        1%{?dist}
@@ -14,8 +22,8 @@ Summary: Build support for external kernel modules
 License: GPLv2
 Source0: %{name}-%{version}.tar.gz
 
-BuildRequires: kernel-automotive-devel-uname-r = %{kversion}
-Requires: kernel-automotive-core-uname-r = %{kversion}
+BuildRequires: kernel-automotive-devel-uname-r = %{kversion_with_debug}
+Requires: %{kpackage}-core-uname-r = %{kversion_with_debug}
 
 %description
 For building external kernel modules mentioned as following:
@@ -40,35 +48,18 @@ and print the XBL logs to console.
 %setup -qn %{name}
 
 %build
-%if %{with_oot_debug}
-make KERNEL_VERSION=%{kversion}+debug modules
-%else
-make KERNEL_VERSION=%{kversion} modules
-%endif
+make KERNEL_VERSION=%{kversion_with_debug} modules
 
 %install
 rm -rf $RPM_BUILD_ROOT
-%if %{with_oot_debug}
-make KERNEL_VERSION=%{kversion}+debug INSTALL_MOD_PATH="$RPM_BUILD_ROOT" modules_install
-rm -rf "$RPM_BUILD_ROOT/lib/modules/%{kversion}+debug/modules."*
-%else
-make KERNEL_VERSION=%{kversion} INSTALL_MOD_PATH="$RPM_BUILD_ROOT" modules_install
-rm -rf "$RPM_BUILD_ROOT/lib/modules/%{kversion}/modules."*
-%endif
+make KERNEL_VERSION=%{kversion_with_debug} INSTALL_MOD_PATH="$RPM_BUILD_ROOT" modules_install
+rm -rf "$RPM_BUILD_ROOT/lib/modules/%{kversion_with_debug}/modules."*
 
 %post
-%if %{with_oot_debug}
-depmod %{kversion}+debug
-%else
-depmod %{kversion}
-%endif
+depmod %{kversion_with_debug}
 
 %files
-%if %{with_oot_debug}
-%define kernel_module_path /lib/modules/%{kversion}+debug
-%else
-%define kernel_module_path /lib/modules/%{kversion}
-%endif
+%define kernel_module_path /lib/modules/%{kversion_with_debug}
 %{kernel_module_path}/extra/minidump/minidump.ko
 %{kernel_module_path}/extra/kaslr_store/kaslr_store.ko
 %{kernel_module_path}/extra/memory_dump_v2/memory_dump_v2.ko
