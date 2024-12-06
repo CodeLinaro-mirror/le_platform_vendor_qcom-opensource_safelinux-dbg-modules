@@ -163,8 +163,8 @@ module_param_array(key_modules, charp, &n_modump, 0644);
 #endif
 
 void *kmsg_buf;
-/* Allocate 128KB for DMESG buffer as default value */
-unsigned long kmsg_dump_sz  = (128 * 1024);
+/* Allocate 256KB for DMESG buffer as default value */
+unsigned long kmsg_dump_sz  = (256 * 1024);
 
 static int register_stack_entry(struct md_region *ksp_entry, u64 sp, u64 size)
 {
