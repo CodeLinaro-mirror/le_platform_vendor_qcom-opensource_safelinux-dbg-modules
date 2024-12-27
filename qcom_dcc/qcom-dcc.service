@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+
+[Unit]
+Description=Configure QCOM DCC registers
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+TimeoutStartSec=0
+Restart=on-failure
+ExecStart=/usr/bin/qcom_dcc_config.sh
+
+[Install]
+WantedBy=multi-user.target
