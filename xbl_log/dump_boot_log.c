@@ -31,7 +31,7 @@ struct xbl_log_data {
 	struct debugfs_blob_wrapper dbg_data;
 };
 
-static void append_buf_data(struct xbl_log_data *xbl_data, const char *name,
+static int append_buf_data(struct xbl_log_data *xbl_data, const char *name,
 			    void __iomem *buf, size_t sz, enum mem_type mem)
 {
 	u32 pos;
@@ -45,6 +45,11 @@ static void append_buf_data(struct xbl_log_data *xbl_data, const char *name,
 						  xbl_data->xbl_buf,
 						  xbl_data->buf_size,
 						  GFP_KERNEL);
+
+	if (!xbl_data->xbl_buf) {
+		dev_err(xbl_data->dev, "Buffer memory allocation failed\n");
+		return -ENOMEM;
+	}
 
 	pos = xbl_data->buf_size - sz;
 
@@ -61,6 +66,8 @@ static void append_buf_data(struct xbl_log_data *xbl_data, const char *name,
 				  "TZ End   [%u]\n", readl(buf));
 		break;
 	};
+
+	return 0;
 }
 
 static int map_addr_range(struct device_node **parent, const char *name,
@@ -115,9 +122,7 @@ static int map_addr_range(struct device_node **parent, const char *name,
 		return -ENOMEM;
 	}
 
-	append_buf_data(xbl_data, name, tmp_buf, tmp_sz, mem);
-
-	return 0;
+	return append_buf_data(xbl_data, name, tmp_buf, tmp_sz, mem);
 }
 
 static int xbl_log_probe(struct platform_device *pdev)
