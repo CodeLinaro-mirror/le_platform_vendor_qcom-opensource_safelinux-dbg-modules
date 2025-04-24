@@ -5,12 +5,13 @@ export TOP_DIR
 obj-m := minidump/
 obj-m += kaslr_store/
 
-ifdef CONFIG_QCOM_MEMORY_DUMP_V2
+# Build out of tree memory dump driver when kernel in-tree memory
+# dump driver disabled. OOT memory dump driver conflict with kernel
+# in-tree memory dump driver, we can only choose one.
+ifndef CONFIG_QCOM_MEMORY_DUMP_V2
 obj-m += memory_dump_v2/
-endif
-
 obj-m += memory_dump_v21/
-
+endif
 
 obj-m += xbl_log/
 
