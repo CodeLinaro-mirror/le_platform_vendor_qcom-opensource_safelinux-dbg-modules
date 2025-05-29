@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014-2017, 2019-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/slab.h>
@@ -13,7 +13,7 @@
 #include <linux/of_address.h>
 #include <minidump.h>
 #include <memory_dump_v21.h>
-#include <linux/qtee_shmbridge.h>
+#include <linux/firmware/qcom/qcom_tzmem.h>
 #include <soc/qcom/secure_buffer.h>
 #include <linux/of_device.h>
 #include <linux/dma-mapping.h>
@@ -1552,7 +1552,7 @@ static int mem_dump_probe(struct platform_device *pdev)
 	if (free_size > 0)
 		mem_dump_free_rmem(rmem->base + used_size, free_size);
 
-	ret = qtee_shmbridge_register(phys_addr, used_size, ns_vmids,
+	ret = qcom_tzmem_register(phys_addr, used_size, ns_vmids,
 			ns_vm_perms, 1, PERM_READ|PERM_WRITE, &shm_bridge_handle);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to create shm bridge.ret=%d\n", ret);
@@ -1564,7 +1564,7 @@ static int mem_dump_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Failed to assign dump table region ret=%d\n", ret);
 		ret = init_memdump_imem_area(used_size);
 		if (ret) {
-			qtee_shmbridge_deregister(shm_bridge_handle);
+			qcom_tzmem_deregister(shm_bridge_handle);
 			return ret;
 		}
 	}
