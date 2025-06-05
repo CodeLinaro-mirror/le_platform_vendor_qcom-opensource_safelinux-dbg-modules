@@ -5,12 +5,15 @@ export TOP_DIR
 obj-m := minidump/
 obj-m += kaslr_store/
 
-# Build out of tree memory dump driver when kernel in-tree memory
-# dump driver disabled. OOT memory dump driver conflict with kernel
-# in-tree memory dump driver, we can only choose one.
-ifndef CONFIG_QCOM_MEMORY_DUMP_V2
-obj-m += memory_dump_v2/
+# Enable Memory dump driver v2.1 only for SA8797P based on the config
+# CONFIG_QCOM_MEMORY_DUMP_V21. Currently, config CONFIG_QCOM_MEMORY_DUMP_V2
+# is disabled for GEN4 and GEN5 auto targets. It is s now safe to enable
+# OOT Memory dump driver v2 which won't conflict with In-Tree
+# Memory dump driver.
+ifdef CONFIG_QCOM_MEMORY_DUMP_V21
 obj-m += memory_dump_v21/
+else
+obj-m += memory_dump_v2/
 endif
 
 obj-m += xbl_log/
