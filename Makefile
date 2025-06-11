@@ -5,12 +5,16 @@ export TOP_DIR
 obj-m := minidump/
 obj-m += kaslr_store/
 
-ifdef CONFIG_QCOM_MEMORY_DUMP_V2
+# Enable Memory dump driver v2.1 only for SA8797P based on the config
+# CONFIG_QCOM_MEMORY_DUMP_V21. Currently, config CONFIG_QCOM_MEMORY_DUMP_V2
+# is disabled for GEN4 and GEN5 auto targets. It is s now safe to enable
+# OOT Memory dump driver v2 which won't conflict with In-Tree
+# Memory dump driver.
+ifdef CONFIG_QCOM_MEMORY_DUMP_V21
+obj-m += memory_dump_v21/
+else
 obj-m += memory_dump_v2/
 endif
-
-obj-m += memory_dump_v21/
-
 
 obj-m += xbl_log/
 
