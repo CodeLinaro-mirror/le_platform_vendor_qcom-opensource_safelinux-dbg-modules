@@ -156,7 +156,7 @@ static int reset_sprs_dump_table(struct device *dev)
 {
 	struct cpuss_dump_data *cpudata = dev_get_drvdata(dev);
 	struct reg_dump_data *p;
-	int ret, i;
+	int ret = 0, i = 0;
 
 	if (!cpudata)
 		return -EFAULT;
@@ -205,7 +205,7 @@ static int update_reg_dump_table(struct device *dev, u32 core_reg_num)
 			* sizeof(uint32_t);
 	struct reg_dump_data *p;
 	struct cpuss_dump_data *cpudata = dev_get_drvdata(dev);
-	int ret;
+	int ret = 0;
 
 	mutex_lock(&cpudata->mutex);
 
@@ -241,7 +241,7 @@ static ssize_t core_reg_num_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
 	struct cpuss_dump_data *cpudata = dev_get_drvdata(dev);
-	int ret;
+	int ret = 0;
 
 	if (!cpudata)
 		return -EFAULT;
@@ -261,7 +261,7 @@ static ssize_t core_reg_num_store(struct device *dev,
 {
 	struct cpuss_dump_data *cpudata = dev_get_drvdata(dev);
 	unsigned int val;
-	int ret;
+	int ret = 0;
 
 	if (kstrtouint(buf, 16, &val))
 		return -EINVAL;
@@ -401,7 +401,7 @@ static int config_cpuss_register(struct device *dev,
 		uint32_t *p, uint32_t index, char cmd,
 		uint32_t register_offset, uint32_t val)
 {
-	int ret;
+	int ret = 0;
 
 	switch (cmd) {
 	case 'r':
@@ -453,7 +453,7 @@ static ssize_t register_config_store(struct device *dev,
 	uint32_t num_cores;
 	u32 extra_memory;
 	u32 used_memory;
-	int nval, ret;
+	int nval, ret = 0;
 	uint32_t *p;
 	char cmd;
 
@@ -575,7 +575,7 @@ static ssize_t format_version_show(struct device *dev,
 {
 	struct cpuss_dump_data *cpudata = dev_get_drvdata(dev);
 	struct reg_dump_data *p;
-	int ret;
+	int ret = 0;
 
 	if (!cpudata)
 		return -EFAULT;
@@ -675,7 +675,7 @@ static ssize_t spr_config_store(struct device *dev,
 	struct cpuss_dump_data *cpudata = dev_get_drvdata(dev);
 	uint32_t spr_data, cpu_num;
 	uint32_t index;
-	int nval, ret;
+	int nval, ret = 0;
 	u32 reserved;
 	uint32_t *p;
 
@@ -1021,8 +1021,6 @@ static int init_memory_dump(void *dump_vaddr, phys_addr_t phys_addr)
 
 	pr_info("MSM Memory Dump apps data table set up\n");
 
-	pr_err("DEBUG: init_memory_dump() phys_addr:0x%llx dump_vaddr:0x%llx\n", phys_addr, dump_vaddr);
-
 	return 0;
 }
 
@@ -1047,7 +1045,7 @@ static int sprs_dump_init(struct device *dev,
 		void *dump_vaddr, u32 size, u32 id)
 {
 	struct cpuss_dump_data *cpudata = dev_get_drvdata(dev);
-	int core_num;
+	int core_num = 0;
 
 	core_num = id - SPR_DUMP_CPU0;
 
@@ -1099,7 +1097,7 @@ static void mem_dump_parse_register_entry(struct memdump_info *dump_info)
 	struct device_node *child_node;
 	u32 size, id, instance;
 	int initialized;
-	int ret;
+	int ret = 0;
 
 	for_each_available_child_of_node(dump_info->dev_node, child_node) {
 		ret = of_property_read_u32(child_node, "qcom,dump-size", &size);
@@ -1153,10 +1151,10 @@ static void mem_dump_parse_register_entry(struct memdump_info *dump_info)
 
 static size_t mem_dump_calc_dump_total_size(const struct device_node *node)
 {
-	size_t total_size, no_of_nodes;
+	size_t total_size = 0, no_of_nodes = 0;
 	struct device_node *child_node;
-	u32 size;
-	int ret;
+	u32 size = 0;
+	int ret = 0;
 
 	ret = total_size = size = no_of_nodes = 0;
 	for_each_available_child_of_node(node, child_node) {
@@ -1180,7 +1178,7 @@ static int mem_dump_alloc(struct platform_device *pdev, struct device_node *node
 	phys_addr_t phys_addr;
 	size_t total_size;
 	void *dump_vaddr;
-	int ret;
+	int ret = 0;
 
 	dump_info = devm_kzalloc(&pdev->dev, sizeof(*dump_info), GFP_KERNEL);
 	if (!dump_info)
@@ -1240,7 +1238,7 @@ static int dynamic_mem_dump_disable(struct memdump_info *dump_info)
 static int dynamic_mem_dump_enable(struct memdump_info *dump_info)
 {
 	void *vbase;
-	int ret;
+	int ret = 0;
 
 	mutex_lock(&dump_info->mutex);
 	if (!dump_info->active) {
@@ -1307,7 +1305,7 @@ static ssize_t disable_store(struct device *dev,
 	const char *dump_name;
 	bool found = false;
 	char str[32] = "";
-	int ret;
+	int ret = 0;
 
 	if (strlen(buf) >= 32)
 		return -EINVAL;
@@ -1374,7 +1372,7 @@ static ssize_t enable_store(struct device *dev,
 	const char *dump_name;
 	bool found = false;
 	char str[32] = "";
-	int ret;
+	int ret = 0;
 
 	if (strlen(buf) >= 32)
 		return -EINVAL;
@@ -1447,7 +1445,7 @@ static int dynamic_mem_dump_alloc(struct platform_device *pdev, struct device_no
 	struct device_node *child_node;
 	struct memdump_info *dump_info;
 	size_t total_size, used_size;
-	int ret;
+	int ret = 0;
 
 	ret = sysfs_create_group(&pdev->dev.kobj, &dynamic_dump_group);
 	if (ret) {
@@ -1493,13 +1491,13 @@ static int mem_dump_probe(struct platform_device *pdev)
 	uint32_t ns_vmids[] = {VMID_HLOS};
 	struct device_node *child_node;
 	struct device_node *rmem_node;
-	size_t free_size, used_size;
+	size_t free_size = 0, used_size = 0;
 	struct reserved_mem *rmem;
 	struct md_region md_entry;
 	u64 shm_bridge_handle;
 	phys_addr_t phys_addr;
 	void *memdump_vaddr;
-	int ret;
+	int ret = 0;
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (ret < 0) {
@@ -1579,20 +1577,22 @@ static int mem_dump_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static const struct of_device_id mem_dump_match_table[] = {
-	{.compatible = "qcom,mem-dump-v21",},
+static const struct of_device_id mem_dump_match_table_v21[] = {
+	{ .compatible = "qcom,mem-dump-v21"},
 	{}
 };
 
-static struct platform_driver mem_dump_driver = {
+MODULE_DEVICE_TABLE(of, mem_dump_match_table_v21);
+
+static struct platform_driver mem_dump_driver_v21 = {
 	.probe = mem_dump_probe,
 	.driver = {
-		.name = "msm_mem_dump",
-		.of_match_table = mem_dump_match_table,
+		.name = "msm_mem_dump_v21",
+		.of_match_table = mem_dump_match_table_v21,
 	},
 };
 
-module_platform_driver(mem_dump_driver);
+module_platform_driver(mem_dump_driver_v21);
 
 MODULE_DESCRIPTION("Memory Dump V2.1 Driver");
 MODULE_LICENSE("GPL");
