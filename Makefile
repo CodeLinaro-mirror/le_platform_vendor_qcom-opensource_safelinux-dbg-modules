@@ -16,7 +16,7 @@ else
 obj-m += memory_dump_v2/
 endif
 
-obj-m += xbl_log/
+obj-m += nhlos_log/
 
 all: clean modules
 
