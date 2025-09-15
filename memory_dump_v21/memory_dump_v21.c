@@ -1096,7 +1096,7 @@ static void mem_dump_parse_register_entry(struct memdump_info *dump_info)
 	struct msm_dump_data *dump_data;
 	struct device_node *child_node;
 	u32 size, id, instance;
-	int initialized;
+	int initialized = 0;
 	int ret = 0;
 
 	for_each_available_child_of_node(dump_info->dev_node, child_node) {
