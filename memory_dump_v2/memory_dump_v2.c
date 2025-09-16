@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014-2017, 2019-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/slab.h>
@@ -12,10 +13,13 @@
 #include <linux/of_address.h>
 #include <minidump.h>
 #include <memory_dump.h>
+#include <linux/qtee_shmbridge.h>
+#include <soc/qcom/secure_buffer.h>
 #include <linux/of_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/firmware/qcom/qcom_scm.h>
 
 #define MSM_DUMP_TABLE_VERSION		MSM_DUMP_MAKE_VERSION(2, 0)
 
@@ -909,6 +913,38 @@ int msm_dump_data_register_nominidump(enum msm_dump_table_ids id,
 }
 EXPORT_SYMBOL(msm_dump_data_register_nominidump);
 
+#define MSM_DUMP_TOTAL_SIZE_OFFSET	0x724
+static int init_memdump_imem_area(size_t size)
+{
+	struct device_node *np;
+	void __iomem *imem_base;
+
+	np = of_find_compatible_node(NULL, NULL,
+				     "qcom,msm-imem-mem-dump-table");
+	if (!np) {
+		pr_err("mem dump base table DT node does not exist\n");
+		return -ENODEV;
+	}
+
+	imem_base = of_iomap(np, 0);
+	if (!imem_base) {
+		pr_err("mem dump base table imem offset mapping failed\n");
+		return -ENOMEM;
+	}
+
+	memcpy_toio(imem_base, &memdump.table_phys,
+			sizeof(memdump.table_phys));
+	memcpy_toio(imem_base + MSM_DUMP_TOTAL_SIZE_OFFSET,
+			&size, sizeof(size_t));
+
+	/* Ensure write to imem_base is complete before unmapping */
+	mb();
+	pr_info("MSM Memory Dump base table set up in IMEM\n");
+
+	iounmap(imem_base);
+	return 0;
+}
+
 static int init_memory_dump(void *dump_vaddr, phys_addr_t phys_addr)
 {
 	struct msm_dump_table *table;
@@ -1030,6 +1066,9 @@ static int mem_dump_alloc(struct platform_device *pdev)
 	phys_addr_t phys_addr, mini_phys_addr;
 	struct sg_table mem_dump_sgt;
 	void *dump_vaddr, *mini_dump_vaddr;
+	uint32_t ns_vmids[] = {VMID_HLOS};
+	uint32_t ns_vm_perms[] = {PERM_READ | PERM_WRITE};
+	u64 shm_bridge_handle;
 	int initialized = 0;
 
 	if (mem_dump_reserve_mem(&pdev->dev) != 0)
@@ -1062,11 +1101,27 @@ static int mem_dump_alloc(struct platform_device *pdev)
 	sg_free_table(&mem_dump_sgt);
 
 	memset(dump_vaddr, 0x0, total_size);
+	ret = qtee_shmbridge_register(phys_addr, total_size, ns_vmids,
+			ns_vm_perms, 1, PERM_READ|PERM_WRITE, &shm_bridge_handle);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to create shm bridge.ret=%d\n", ret);
+		return ret;
+	}
 
 	ret = init_memory_dump(dump_vaddr, phys_addr);
 	if (ret) {
 		dev_err(&pdev->dev, "Memory Dump table set up is failed\n");
+		qtee_shmbridge_deregister(shm_bridge_handle);
 		return ret;
+	}
+
+	ret = qcom_scm_assign_dump_table_region(1, phys_addr, total_size);
+	if (ret) {
+		ret = init_memdump_imem_area(total_size);
+		if (ret) {
+			qtee_shmbridge_deregister(shm_bridge_handle);
+			return ret;
+		}
 	}
 
 	mini_dump_vaddr = dump_vaddr;
