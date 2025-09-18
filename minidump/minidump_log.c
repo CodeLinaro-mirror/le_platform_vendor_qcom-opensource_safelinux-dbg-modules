@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/cache.h>
@@ -29,14 +29,11 @@
 #include <linux/vmalloc.h>
 #include <linux/panic_notifier.h>
 #include <linux/percpu.h>
-#ifdef CONFIG_QCOM_MINIDUMP_PSTORE
 #include <linux/math64.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
-#endif
 
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
 #include <linux/bits.h>
 #include <linux/sched/prio.h>
 #include <linux/seq_buf.h>
@@ -52,18 +49,11 @@
 #include <linux/module.h>
 #include <linux/cma.h>
 #include <linux/dma-map-ops.h>
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_CPU_CONTEXT
-#include <trace/hooks/debug.h>
-#endif
 #include "minidump_memory.h"
-#endif
 
 #include <linux/kmsg_dump.h>
 
-#ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
-
 #include <trace/events/sched.h>
-
 #ifdef CONFIG_VMAP_STACK
 #define STACK_NUM_PAGES (THREAD_SIZE / PAGE_SIZE)
 #else
@@ -88,67 +78,29 @@ struct md_suspend_context_data {
 };
 
 static struct md_suspend_context_data md_suspend_context;
-#endif
 
 static bool is_vmap_stack __read_mostly;
 
-#ifdef CONFIG_QCOM_MINIDUMP_FTRACE
-#include <trace/hooks/ftrace_dump.h>
 #include <linux/ring_buffer.h>
 
 #define MD_FTRACE_BUF_SIZE	SZ_2M
 
 static char *md_ftrace_buf_addr;
-static size_t md_ftrace_buf_current;
-static bool minidump_ftrace_in_oops;
-static bool minidump_ftrace_dump = true;
-#endif
 
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-/* Rnqueue information */
-#ifndef CONFIG_MINIDUMP_ALL_TASK_INFO
-#define MD_RUNQUEUE_PAGES	8
-#else
 #define MD_RUNQUEUE_PAGES	150
-#endif
 
 static bool md_in_oops_handler;
 static atomic_t md_handle_done;
 static struct seq_buf *md_runq_seq_buf;
-static md_align_offset;
+static int md_align_offset;
 
 /* CPU context information */
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_CPU_CONTEXT
 #define MD_CPU_CNTXT_PAGES	32
-
 static int die_cpu = -1;
 static struct seq_buf *md_cntxt_seq_buf;
-static DEFINE_PER_CPU(struct pt_regs, regs_before_stop);
-#endif
 
 /* Meminfo */
 static struct seq_buf *md_meminfo_seq_buf;
-
-/* Slabinfo */
-#ifdef CONFIG_SLUB_DEBUG
-static struct seq_buf *md_slabinfo_seq_buf;
-#endif
-
-#ifdef CONFIG_PAGE_OWNER
-size_t md_pageowner_dump_size = SZ_2M;
-char *md_pageowner_dump_addr;
-#endif
-
-#ifdef CONFIG_SLUB_DEBUG
-size_t md_slabowner_dump_size = SZ_2M;
-char *md_slabowner_dump_addr;
-#endif
-
-size_t md_dma_buf_info_size = SZ_256K;
-char *md_dma_buf_info_addr;
-
-size_t md_dma_buf_procs_size = SZ_256K;
-char *md_dma_buf_procs_addr;
 
 /* Modules information */
 #ifdef CONFIG_MODULES
@@ -160,7 +112,6 @@ static int n_modump;
 static char *key_modules[10];
 module_param_array(key_modules, charp, &n_modump, 0644);
 #endif	/* CONFIG_MODULES */
-#endif
 
 void *kmsg_buf;
 /* Allocate 256KB for DMESG buffer as default value */
@@ -263,7 +214,6 @@ void dump_stack_minidump(u64 sp)
 		pr_err("Failed to add current task %d in Minidump\n", cpu);
 }
 
-#ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
 static void update_stack_entry(struct md_region *ksp_entry, u64 sp,
 			       int mdno)
 {
@@ -407,48 +357,6 @@ static void update_md_suspend_currents(void)
 	update_md_suspend_current_task();
 }
 
-static void register_current_stack(void)
-{
-	int cpu;
-	u64 sp = current_stack_pointer;
-	struct md_stack_cpu_data *md_stack_cpu_d;
-	struct vm_struct *stack_vm_area;
-	char name_str[MAX_NAME_LENGTH];
-
-	/*
-	 * Since stacks are now allocated with vmalloc, the translation to
-	 * physical address is not a simple linear transformation like it is
-	 * for kernel logical addresses, since vmalloc creates a virtual
-	 * mapping. Thus, virt_to_phys() should not be used in this context;
-	 * instead the page table must be walked to acquire the physical
-	 * address of all pages of the stack.
-	 */
-	if (likely(is_vmap_stack)) {
-		stack_vm_area = task_stack_vm_area(current);
-		sp = (u64)stack_vm_area->addr;
-	}
-	for_each_possible_cpu(cpu) {
-		/*
-		 * Let's register dummies for now,
-		 * once system up and running, let the cpu update its currents.
-		 */
-		md_stack_cpu_d = &per_cpu(md_stack_data, cpu);
-		scnprintf(name_str, sizeof(name_str), "KSTACK%d", cpu);
-		if (is_vmap_stack)
-			register_vmapped_stack(md_stack_cpu_d->stack_mdr,
-				md_stack_cpu_d->stack_mdidx, sp,
-				name_str, false);
-		else
-			register_normal_stack(md_stack_cpu_d->stack_mdr,
-				md_stack_cpu_d->stack_mdidx, sp,
-				name_str, false);
-	}
-
-	register_trace_sched_switch(md_current_stack_notifer, NULL);
-	md_current_stack_init = 1;
-	smp_call_function(md_current_stack_ipi_handler, NULL, 1);
-}
-
 static void register_suspend_stack(void)
 {
 	char name_str[MAX_NAME_LENGTH];
@@ -512,68 +420,6 @@ static void register_suspend_context(void)
 	register_pm_notifier(&minidump_pm_nb);
 	md_suspend_context.init = true;
 }
-#endif
-
-#ifdef CONFIG_QCOM_MINIDUMP_FTRACE
-static void minidump_add_trace_event(char *buf, size_t size)
-{
-	char *addr;
-
-	if (!READ_ONCE(md_ftrace_buf_addr) ||
-	    (size > (size_t)MD_FTRACE_BUF_SIZE))
-		return;
-
-	if ((md_ftrace_buf_current + size) > (size_t)MD_FTRACE_BUF_SIZE)
-		md_ftrace_buf_current = 0;
-	addr = md_ftrace_buf_addr + md_ftrace_buf_current;
-	memcpy(addr, buf, size);
-	md_ftrace_buf_current += size;
-}
-
-static void md_trace_oops_enter(void *unused, bool *enter_check)
-{
-	if (!minidump_ftrace_in_oops) {
-		minidump_ftrace_in_oops = true;
-		*enter_check = false;
-	} else {
-		*enter_check = true;
-	}
-}
-
-static void md_trace_oops_exit(void *unused, bool *exit_check)
-{
-	minidump_ftrace_in_oops = false;
-}
-
-static void md_update_trace_fmt(void *unused, bool *format_check)
-{
-	*format_check = false;
-}
-
-static void md_buf_size_check(void *unused, unsigned long buffer_size,
-			      bool *size_check)
-{
-	if (!minidump_ftrace_dump) {
-		*size_check = true;
-		return;
-	}
-
-	if (buffer_size > (SZ_256K + PAGE_SIZE)) {
-		pr_err("Skip md ftrace buffer dump for: %#lx\n", buffer_size);
-		minidump_ftrace_dump = false;
-		*size_check = true;
-	}
-}
-
-static void md_dump_trace_buf(void *unused, struct trace_seq *trace_buf,
-			      bool *printk_check)
-{
-	if (minidump_ftrace_in_oops && minidump_ftrace_dump) {
-		minidump_add_trace_event(trace_buf->buffer,
-					 trace_buf->seq.len);
-		*printk_check = false;
-	}
-}
 
 static void md_register_trace_buf(void)
 {
@@ -596,9 +442,6 @@ static void md_register_trace_buf(void)
 	smp_mb();
 	WRITE_ONCE(md_ftrace_buf_addr, buffer_start);
 }
-#endif
-
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
 
 static void md_dump_align(void)
 {
@@ -695,36 +538,7 @@ static void md_dump_cfs_rq(struct cfs_rq *cfs, struct task_struct *curr)
 
 	md_dump_cgroup_state("curr", cfs->curr, curr);
 	md_dump_cgroup_state("next", cfs->next, curr);
-	md_dump_cgroup_state("last", cfs->last, curr);
-	md_dump_cgroup_state("skip", cfs->skip, curr);
 	md_rb_walk_cfs(rb_root_cached_p, curr);
-}
-
-static void md_dump_rt_rq(struct rt_rq  *rt_rq, struct task_struct *curr)
-{
-	struct rt_prio_array *array = &rt_rq->active;
-	struct sched_rt_entity *rt_se;
-	int idx;
-
-	/* Lifted most of the below code from dump_throttled_rt_tasks() */
-	if (bitmap_empty(array->bitmap, MAX_RT_PRIO))
-		return;
-
-	idx = sched_find_first_bit(array->bitmap);
-	while (idx < MAX_RT_PRIO) {
-		list_for_each_entry(rt_se, array->queue + idx, run_list) {
-			struct task_struct *p;
-
-#ifdef CONFIG_RT_GROUP_SCHED
-			if (rt_se->my_q)
-				continue;
-#endif
-
-			p = container_of(rt_se, struct task_struct, rt);
-			md_dump_task_info(p, "pend", curr);
-		}
-		idx = find_next_bit(array->bitmap, MAX_RT_PRIO, idx + 1);
-	}
 }
 
 static const char * const task_state_array[] = {
@@ -759,35 +573,10 @@ static inline const char *md_get_task_state(struct task_struct *tsk)
 
 static void md_dump_runqueues(void)
 {
-	int cpu;
-	struct rq *rq;
-	struct rt_rq  *rt;
-	struct cfs_rq *cfs;
 	struct task_struct *p, *t;
-#if IS_ENABLED(CONFIG_SCHED_WALT)
-	struct walt_task_struct *wts;
-#endif
 
 	if (!md_runq_seq_buf)
 		return;
-
-	for_each_possible_cpu(cpu) {
-		rq = cpu_rq(cpu);
-		rt = &rq->rt;
-		cfs = &rq->cfs;
-		seq_buf_printf(md_runq_seq_buf,
-			       "CPU%d has %d process, current is pid %d\n",
-			       cpu, rq->nr_running, cpu_curr(cpu)->pid);
-		seq_buf_printf(md_runq_seq_buf,
-			       "CFS has %d process\n",
-			       cfs->nr_running);
-		md_dump_cfs_rq(cfs, cpu_curr(cpu));
-		seq_buf_printf(md_runq_seq_buf,
-			       "RT has %d process\n",
-			       rt->rt_nr_running);
-		md_dump_rt_rq(rt, cpu_curr(cpu));
-		seq_buf_printf(md_runq_seq_buf, "\n");
-	}
 
 	seq_buf_printf(md_runq_seq_buf, "%-15s", "Task name");
 	seq_buf_printf(md_runq_seq_buf, "%*s", 6, "PID");
@@ -798,17 +587,9 @@ static void md_dump_runqueues(void)
 	seq_buf_printf(md_runq_seq_buf, "%*s", 4, "CPU");
 	seq_buf_printf(md_runq_seq_buf, "%*s", 5, "Prio");
 	seq_buf_printf(md_runq_seq_buf, "%*s", 6, "State");
-#if IS_ENABLED(CONFIG_SCHED_WALT)
-	seq_buf_printf(md_runq_seq_buf, "%*s", 17, "Last_enqueued_ts");
-	seq_buf_printf(md_runq_seq_buf, "%*s", 16, "Last_sleep_ts");
-#endif
 	seq_buf_printf(md_runq_seq_buf, "\n");
 
 	for_each_process_thread(p, t) {
-#ifndef CONFIG_MINIDUMP_ALL_TASK_INFO
-		if (READ_ONCE(t->__state))
-			continue;
-#endif
 		seq_buf_printf(md_runq_seq_buf, "%-15s", t->comm);
 		seq_buf_printf(md_runq_seq_buf, "%6d", t->pid);
 		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.last_arrival);
@@ -818,15 +599,10 @@ static void md_dump_runqueues(void)
 		seq_buf_printf(md_runq_seq_buf, "%4d", t->on_cpu);
 		seq_buf_printf(md_runq_seq_buf, "%5d", t->prio);
 		seq_buf_printf(md_runq_seq_buf, "%*s", 6, md_get_task_state(t));
-#if IS_ENABLED(CONFIG_SCHED_WALT)
-		seq_buf_printf(md_runq_seq_buf, "%17ld", wts->last_enqueued_ts);
-		seq_buf_printf(md_runq_seq_buf, "%16ld", wts->last_sleep_ts);
-#endif
 		seq_buf_printf(md_runq_seq_buf, "\n");
 	}
 }
 
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_CPU_CONTEXT
 /*
  * dump a block of kernel memory from around the given address.
  * Bulk of the code is lifted from arch/arm64/kernel/proccess.c.
@@ -940,18 +716,6 @@ static inline void md_dump_panic_regs(void)
 	md_reg_context_data(&regs);
 }
 
-static void md_dump_other_cpus_context(void)
-{
-	int cpu;
-	struct pt_regs regs;
-
-	for_each_possible_cpu(cpu) {
-		regs = per_cpu(regs_before_stop, cpu);
-		seq_buf_printf(md_cntxt_seq_buf, "\nSTOPPED CPU : %d\n", cpu);
-		md_reg_context_data(&regs);
-	}
-}
-
 static int md_die_context_notify(struct notifier_block *self,
 				 unsigned long val, void *data)
 {
@@ -976,13 +740,100 @@ static struct notifier_block md_die_context_nb = {
 	.priority = INT_MAX - 2, /* < msm watchdog die notifier */
 };
 
-static void md_ipi_stop(void *unused, struct pt_regs *regs)
+static void show_val_kb(struct seq_buf *m, const char *s, unsigned long num)
 {
-	unsigned int cpu = smp_processor_id();
-
-	per_cpu(regs_before_stop, cpu) = *regs;
+	seq_buf_printf(m, "%s : %lld KB\n", s, num << (PAGE_SHIFT - 10));
 }
+
+void md_dump_meminfo(struct seq_buf *m)
+{
+	struct sysinfo i;
+	long cached;
+	long available;
+	unsigned long pages[NR_LRU_LISTS];
+	unsigned long sreclaimable, sunreclaim;
+	int lru;
+
+	si_meminfo(&i);
+
+	cached = global_node_page_state(NR_FILE_PAGES) -
+			total_swapcache_pages() - i.bufferram;
+	if (cached < 0)
+		cached = 0;
+
+	for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
+		pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
+
+	available = si_mem_available();
+	sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
+	sunreclaim = global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B);
+
+	show_val_kb(m, "MemTotal:       ", i.totalram);
+	show_val_kb(m, "MemFree:        ", i.freeram);
+	show_val_kb(m, "MemAvailable:   ", available);
+	show_val_kb(m, "Buffers:        ", i.bufferram);
+	show_val_kb(m, "Cached:         ", cached);
+	show_val_kb(m, "SwapCached:     ", total_swapcache_pages());
+	show_val_kb(m, "Active:         ", pages[LRU_ACTIVE_ANON] +
+					   pages[LRU_ACTIVE_FILE]);
+	show_val_kb(m, "Inactive:       ", pages[LRU_INACTIVE_ANON] +
+					   pages[LRU_INACTIVE_FILE]);
+	show_val_kb(m, "Active(anon):   ", pages[LRU_ACTIVE_ANON]);
+	show_val_kb(m, "Inactive(anon): ", pages[LRU_INACTIVE_ANON]);
+	show_val_kb(m, "Active(file):   ", pages[LRU_ACTIVE_FILE]);
+	show_val_kb(m, "Inactive(file): ", pages[LRU_INACTIVE_FILE]);
+	show_val_kb(m, "Unevictable:    ", pages[LRU_UNEVICTABLE]);
+	show_val_kb(m, "Mlocked:        ", global_zone_page_state(NR_MLOCK));
+
+#ifdef CONFIG_HIGHMEM
+	show_val_kb(m, "HighTotal:      ", i.totalhigh);
+	show_val_kb(m, "HighFree:       ", i.freehigh);
+	show_val_kb(m, "LowTotal:       ", i.totalram - i.totalhigh);
+	show_val_kb(m, "LowFree:        ", i.freeram - i.freehigh);
 #endif
+
+	show_val_kb(m, "Dirty:          ",
+		    global_node_page_state(NR_FILE_DIRTY));
+	show_val_kb(m, "Writeback:      ",
+		    global_node_page_state(NR_WRITEBACK));
+	show_val_kb(m, "AnonPages:      ",
+		    global_node_page_state(NR_ANON_MAPPED));
+	show_val_kb(m, "Mapped:         ",
+		    global_node_page_state(NR_FILE_MAPPED));
+	show_val_kb(m, "Shmem:          ", i.sharedram);
+	show_val_kb(m, "KReclaimable:   ", sreclaimable +
+		    global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE));
+	show_val_kb(m, "Slab:           ", sreclaimable + sunreclaim);
+	show_val_kb(m, "SReclaimable:   ", sreclaimable);
+	show_val_kb(m, "SUnreclaim:     ", sunreclaim);
+	seq_buf_printf(m, "KernelStack:    %8lu kB\n",
+		   global_node_page_state(NR_KERNEL_STACK_KB));
+#ifdef CONFIG_SHADOW_CALL_STACK
+	seq_buf_printf(m, "ShadowCallStack:%8lu kB\n",
+		   global_node_page_state(NR_KERNEL_SCS_KB));
+#endif
+	show_val_kb(m, "PageTables:     ",
+		    global_node_page_state(NR_PAGETABLE));
+	show_val_kb(m, "Bounce:         ",
+		    global_zone_page_state(NR_BOUNCE));
+	show_val_kb(m, "WritebackTmp:   ",
+		    global_node_page_state(NR_WRITEBACK_TEMP));
+	seq_buf_printf(m, "VmallocTotal:   %8lu kB\n",
+		   (unsigned long)VMALLOC_TOTAL >> 10);
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	show_val_kb(m, "AnonHugePages:  ",
+		    global_node_page_state(NR_ANON_THPS) * HPAGE_PMD_NR);
+	show_val_kb(m, "ShmemHugePages: ",
+		    global_node_page_state(NR_SHMEM_THPS) * HPAGE_PMD_NR);
+	show_val_kb(m, "ShmemPmdMapped: ",
+		    global_node_page_state(NR_SHMEM_PMDMAPPED) * HPAGE_PMD_NR);
+	show_val_kb(m, "FileHugePages:  ",
+		    global_node_page_state(NR_FILE_THPS) * HPAGE_PMD_NR);
+	show_val_kb(m, "FilePmdMapped:  ",
+		    global_node_page_state(NR_FILE_PMDMAPPED) * HPAGE_PMD_NR);
+#endif
+}
 
 void md_dump_process(void)
 {
@@ -991,36 +842,15 @@ void md_dump_process(void)
 	if (!atomic_add_unless(&md_handle_done, 1, 1))
 		return;
 	md_in_oops_handler = true;
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_CPU_CONTEXT
 	if (!md_cntxt_seq_buf)
 		goto dump_rq;
 	if (raw_smp_processor_id() != die_cpu)
 		md_dump_panic_regs();
-	md_dump_other_cpus_context();
 dump_rq:
-#endif
 	md_dump_runqueues();
 	if (md_meminfo_seq_buf)
 		md_dump_meminfo(md_meminfo_seq_buf);
 
-#ifdef CONFIG_SLUB_DEBUG
-	if (md_slabinfo_seq_buf)
-		md_dump_slabinfo(md_slabinfo_seq_buf);
-#endif
-
-#ifdef CONFIG_PAGE_OWNER
-	if (md_pageowner_dump_addr)
-		md_dump_pageowner(md_pageowner_dump_addr, md_pageowner_dump_size);
-#endif
-
-#ifdef CONFIG_SLUB_DEBUG
-	if (md_slabowner_dump_addr)
-		md_dump_slabowner(md_slabowner_dump_addr, md_slabowner_dump_size);
-#endif
-	if (md_dma_buf_info_addr)
-		md_dma_buf_info(md_dma_buf_info_addr, md_dma_buf_info_size);
-	if (md_dma_buf_procs_addr)
-		md_dma_buf_procs(md_dma_buf_procs_addr, md_dma_buf_procs_size);
 	md_in_oops_handler = false;
 }
 EXPORT_SYMBOL(md_dump_process);
@@ -1092,38 +922,12 @@ err_seq_buf:
 
 static void md_register_panic_data(void)
 {
-	struct dentry *minidump_dir = NULL;
-
 	md_register_panic_entries(MD_RUNQUEUE_PAGES, "KRUNQUEUE",
 				  &md_runq_seq_buf);
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_CPU_CONTEXT
 	md_register_panic_entries(MD_CPU_CNTXT_PAGES, "KCNTXT",
 				  &md_cntxt_seq_buf);
-#endif
 	md_register_panic_entries(MD_MEMINFO_PAGES, "MEMINFO",
 				  &md_meminfo_seq_buf);
-#ifdef CONFIG_SLUB_DEBUG
-	md_register_panic_entries(MD_SLABINFO_PAGES, "SLABINFO",
-				  &md_slabinfo_seq_buf);
-#endif
-	if (!minidump_dir)
-		minidump_dir = debugfs_create_dir("minidump", NULL);
-#ifdef CONFIG_PAGE_OWNER
-	if (is_page_owner_enabled()) {
-		md_register_memory_dump(md_pageowner_dump_size, "PAGEOWNER");
-		md_debugfs_pageowner(minidump_dir);
-	}
-#endif
-#ifdef CONFIG_SLUB_DEBUG
-	if (is_slub_debug_enabled()) {
-		md_register_memory_dump(md_slabowner_dump_size, "SLABOWNER");
-		md_debugfs_slabowner(minidump_dir);
-	}
-#endif
-	md_register_memory_dump(md_dma_buf_info_size, "DMA_INFO");
-	md_debugfs_dmabufinfo(minidump_dir);
-	md_register_memory_dump(md_dma_buf_procs_size, "DMA_PROC");
-	md_debugfs_dmabufprocs(minidump_dir);
 }
 
 static int register_vmap_mem(const char *name, void *virual_addr, size_t dump_len)
@@ -1171,13 +975,13 @@ static int md_module_process(struct module *mod)
 	}
 
 	if (md_mod_info_seq_buf) {
-		base_addr = (unsigned long)mod->core_layout.base;
+		base_addr = (unsigned long)mod->mem[MOD_TEXT].base;
 		seq_buf_printf(md_mod_info_seq_buf, "name: %s, base: %lx",
 				mod->name, base_addr);
 		if (is_key_module) {
 			dump_start = base_addr +
-					mod->core_layout.ro_after_init_size;
-			dump_end = base_addr + mod->core_layout.size;
+					mod->mem[MOD_RO_AFTER_INIT].size;
+			dump_end = base_addr + mod->mem[MOD_TEXT].size;
 			if (((dump_end - dump_start) / PAGE_SIZE) <
 				msm_minidump_get_available_region()) {
 				for (i = 0; i < mod->sect_attrs->nsections ; i++) {
@@ -1196,17 +1000,6 @@ static int md_module_process(struct module *mod)
 		seq_buf_printf(md_mod_info_seq_buf, "\n");
 	}
 
-	return 0;
-}
-
-static int md_get_present_module(const char *mod_name,
-				void *mod_addr, void *data)
-{
-	struct module *mod = container_of(mod_name,
-				struct module, name[0]);
-
-	if (mod != THIS_MODULE)
-		md_module_process(mod);
 	return 0;
 }
 
@@ -1245,9 +1038,7 @@ static void md_register_module_data(void)
 	}
 
 }
-#endif
 
-#ifdef CONFIG_QCOM_MINIDUMP_PSTORE
 static void register_pstore_info(void)
 {
 	int ret;
@@ -1332,7 +1123,6 @@ static void register_pstore_info(void)
 		paddr += size;
 	}
 }
-#endif
 
 static void md_kmsg_dump(struct kmsg_dumper *dumper,
 			enum kmsg_dump_reason reason)
@@ -1395,24 +1185,13 @@ int msm_minidump_log_init(void)
 		return ret;
 
 	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
-#ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
-	register_current_stack();
 	register_suspend_context();
-#endif
-#ifdef CONFIG_QCOM_MINIDUMP_PSTORE
 	register_pstore_info();
-#endif
-#ifdef CONFIG_QCOM_MINIDUMP_FTRACE
 	md_register_trace_buf();
-#endif
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
 	md_register_module_data();
 	md_register_panic_data();
 	atomic_notifier_chain_register(&panic_notifier_list, &md_panic_blk);
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_CPU_CONTEXT
 	register_die_notifier(&md_die_context_nb);
-#endif
-#endif
 	return 0;
 }
 
