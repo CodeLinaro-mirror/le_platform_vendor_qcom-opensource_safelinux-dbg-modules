@@ -973,7 +973,7 @@ static int init_memdump_imem_area(size_t size)
 	struct device_node *np;
 
 	np = of_find_compatible_node(NULL, NULL,
-				     "qcom,msm-imem-mem_dump_table");
+				     "qcom,msm-imem-mem-dump-table");
 	if (!np) {
 		pr_err("mem dump base table DT node does not exist\n");
 		return -ENODEV;
