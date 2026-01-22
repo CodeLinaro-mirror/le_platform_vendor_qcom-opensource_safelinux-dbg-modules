@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #define pr_fmt(fmt) "Minidump: " fmt
@@ -17,6 +17,7 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/slab.h>
+#include <linux/kallsyms.h>
 #include "gh_rm_drv.h"
 #include <linux/soc/qcom/smem.h>
 #include "minidump.h"
@@ -829,14 +830,19 @@ static int msm_minidump_add_header(void)
 	struct elf_shdr *shdr;
 	struct elf_phdr *phdr;
 	unsigned int strtbl_off, elfh_size, phdr_off;
-	char *banner, *linux_banner = "Linux";
+	char *banner, *linux_banner;
 	int slot_num;
 
-	//linux_banner = android_debug_symbol(ADS_LINUX_BANNER);
 	/* Header buffer contains:
 	 * elf header, MAX_NUM_ENTRIES+4 of section and program elf headers,
 	 * string table section and linux banner.
 	 */
+	linux_banner = (void *)kallsyms_lookup_name("linux_banner");
+	if (!linux_banner) {
+		pr_err("minidump: Unable to find 'linux_banner' symbol\n");
+		return -ENOENT;
+	}
+
 	elfh_size = sizeof(*ehdr) + MAX_STRTBL_SIZE +
 			(strlen(linux_banner) + 1) +
 			((sizeof(*shdr) + sizeof(*phdr))

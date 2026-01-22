@@ -113,6 +113,7 @@ static char *key_modules[10];
 module_param_array(key_modules, charp, &n_modump, 0644);
 #endif	/* CONFIG_MODULES */
 
+typedef phys_addr_t (*percpu_ptr_to_phys_fn)(void *);
 void *kmsg_buf;
 /* Allocate 256KB for DMESG buffer as default value */
 unsigned long kmsg_dump_sz  = (256 * 1024);
@@ -136,6 +137,71 @@ static int register_stack_entry(struct md_region *ksp_entry, u64 sp, u64 size)
 		pr_info("Failed to add stack of entry %s in Minidump\n",
 				ksp_entry->name);
 	return entry;
+}
+
+static void register_kernel_sections(void)
+{
+	struct md_region ksec_entry;
+	char *data_name = "KDATABSS";
+	char *rodata_name = "KROAIDATA";
+	size_t static_size;
+	void __percpu *base, __percpu *end;
+	unsigned int cpu;
+	void *_sdata, *__bss_stop;
+	void *start_ro, *end_ro;
+
+	_sdata = (void *)kallsyms_lookup_name("_sdata");
+	__bss_stop = (void *)kallsyms_lookup_name("__bss_stop");
+	if (!_sdata || !__bss_stop) {
+		pr_err("minidump: Skipping data section due to missing symbols\n");
+	} else {
+		memset(&ksec_entry, 0, sizeof(ksec_entry));
+		strscpy(ksec_entry.name, data_name, sizeof(ksec_entry.name));
+		ksec_entry.virt_addr = (u64)_sdata;
+		ksec_entry.phys_addr = virt_to_phys(_sdata);
+		ksec_entry.size = roundup((__bss_stop - _sdata), 4);
+		if (msm_minidump_add_region(&ksec_entry) < 0)
+			pr_err("Failed to add data section in Minidump\n");
+	}
+
+	/* ro_after_init range */
+	start_ro = (void *)kallsyms_lookup_name("__start_ro_after_init");
+	end_ro   = (void *)kallsyms_lookup_name("__end_ro_after_init");
+	if (!start_ro || !end_ro) {
+		pr_err("minidump: Skipping rodata section due to missing symbols\n");
+	} else {
+		memset(&ksec_entry, 0, sizeof(ksec_entry));
+		strscpy(ksec_entry.name, rodata_name, sizeof(ksec_entry.name));
+		ksec_entry.virt_addr = (uintptr_t)start_ro;
+		ksec_entry.phys_addr = virt_to_phys(start_ro);
+		ksec_entry.size = roundup((end_ro - start_ro), 4);
+		if (msm_minidump_add_region(&ksec_entry) < 0)
+			pr_err("Failed to add rodata section in Minidump\n");
+	}
+
+	base = (void __percpu *)kallsyms_lookup_name("__per_cpu_start");
+	end = (void __percpu *)kallsyms_lookup_name("__per_cpu_end");
+	percpu_ptr_to_phys_fn percpu_ptr_to_phys =
+			(percpu_ptr_to_phys_fn)(uintptr_t)
+			kallsyms_lookup_name("per_cpu_ptr_to_phys");
+	if (!base || !end || !percpu_ptr_to_phys) {
+		pr_err("minidump: Skipping percpu sections due to missing symbol\n");
+	} else {
+		static_size = (size_t)((char *)end - (char *)base);
+		/* Add percpu static sections */
+		for_each_possible_cpu(cpu) {
+			void *start = per_cpu_ptr(base, cpu);
+
+			memset(&ksec_entry, 0, sizeof(ksec_entry));
+			scnprintf(ksec_entry.name, sizeof(ksec_entry.name),
+							  "KSPERCPU%d", cpu);
+			ksec_entry.virt_addr = (uintptr_t)start;
+			ksec_entry.phys_addr = percpu_ptr_to_phys(start);
+			ksec_entry.size = static_size;
+			if (msm_minidump_add_region(&ksec_entry) < 0)
+				pr_err("Failed to add percpu sections in Minidump\n");
+		}
+	}
 }
 
 static inline bool in_stack_range(
@@ -1184,6 +1250,7 @@ int msm_minidump_log_init(void)
 	if (ret < 0)
 		return ret;
 
+	register_kernel_sections();
 	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
 	register_suspend_context();
 	register_pstore_info();
