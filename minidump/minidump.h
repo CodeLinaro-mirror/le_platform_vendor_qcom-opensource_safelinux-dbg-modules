@@ -11,6 +11,8 @@
 #include <linux/workqueue.h>
 #include <linux/percpu.h>
 #include <linux/printk.h>
+#include <linux/stacktrace.h>
+#include <linux/page_ext.h>
 #define CONFIG_MINIDUMP_MAX_ENTRIES 200
 
 enum minidump_entry_cmd {
@@ -112,4 +114,31 @@ static inline int qcom_va_md_add_region(struct va_md_entry *entry)
 }
 #endif
 
+struct slabinfo;
+/* Declare pointers to the functions we will be looking up via kallsyms */
+typedef phys_addr_t (*per_cpu_ptr_to_phys_fn)(void *);
+typedef void (*arch_stack_walk_fn)(stack_trace_consume_fn consume_entry,
+		void *cookie, struct task_struct *task, struct pt_regs *regs);
+typedef struct page *(*cma_alloc_fn)(struct cma *cma, unsigned long count,
+					unsigned int align, bool no_warn);
+typedef bool (*cma_release_fn)(struct cma *cma, const struct page *pages,
+							unsigned long count);
+typedef unsigned long (*pcpu_nr_pages_fn)(void);
+typedef void (*get_slabinfo_fn)(struct kmem_cache *s, struct slabinfo *sinfo);
+typedef void (*si_swapinfo_fn)(struct sysinfo *val);
+typedef unsigned long (*vmalloc_nr_pages_fn)(void);
+typedef struct page_ext *(*page_ext_get_fn) (struct page *);
+typedef void (*page_ext_put_fn) (struct page_ext *);
+
+/* Externs for globals defined in minidump_log.c */
+extern per_cpu_ptr_to_phys_fn per_cpu_ptr_to_phys_t;
+extern arch_stack_walk_fn arch_stack_walk_t;
+extern cma_alloc_fn cma_alloc_t;
+extern cma_release_fn cma_release_t;
+extern pcpu_nr_pages_fn pcpu_nr_pages_t;
+extern get_slabinfo_fn get_slabinfo_t;
+extern si_swapinfo_fn si_swapinfo_t;
+extern vmalloc_nr_pages_fn vmalloc_nr_pages_t;
+extern page_ext_get_fn page_ext_get_t;
+extern page_ext_put_fn page_ext_put_t;
 #endif
