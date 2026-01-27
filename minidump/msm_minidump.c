@@ -241,7 +241,7 @@ int msm_minidump_clear_headers(const struct md_region *entry)
 
 	}
 	if (i == hdr->e_phnum) {
-		pr_info("Cannot find entry in elf\n");
+		printk_deferred("Cannot find entry in elf\n");
 		return -EINVAL;
 	}
 	pidx = i;
@@ -256,13 +256,13 @@ int msm_minidump_clear_headers(const struct md_region *entry)
 
 	}
 	if (i == hdr->e_shnum) {
-		pr_info("Cannot find entry in elf\n");
+		printk_deferred("Cannot find entry in elf\n");
 		return -EINVAL;
 	}
 	shidx = i;
 
 	if (shdr->sh_offset != phdr->p_offset) {
-		pr_info("Invalid entry details in elf, Minidump broken..\n");
+		printk_deferred("Invalid entry details in elf, Minidump broken..\n");
 		return -EINVAL;
 	}
 
@@ -1316,4 +1316,5 @@ static struct platform_driver msm_minidump_driver = {
 module_platform_driver(msm_minidump_driver);
 
 MODULE_DESCRIPTION("MSM Mini Dump Driver");
+MODULE_IMPORT_NS(MINIDUMP);
 MODULE_LICENSE("GPL v2");
