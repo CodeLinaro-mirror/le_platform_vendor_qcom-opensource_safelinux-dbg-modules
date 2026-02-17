@@ -1,6 +1,16 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+
+# Load qcom-dcc module
+qcom_dcc_ko="$(find /usr/lib64/modules/$(uname -r)/ -name "qcom-dcc.ko")"
+if [ -n "$qcom_dcc_ko" ] && [ -f "$qcom_dcc_ko" ]; then
+    modprobe qcom-dcc
+    if [ $? -ne 0 ]; then
+        echo "Failed to load qcom-dcc module"
+        exit 1
+    fi
+fi
 
 # Assume only one conf file is present in /etc/qcom-dcc/
 # This file is used to configure QCOM DCC registers
@@ -14,8 +24,17 @@ fi
 
 . "$conf_file"
 
+dcc_dir="${DCC_PATH:?}/${DCC_DEV_NAME:?}"
+
+# Wait for DCC device to appear (handle deferred probing)
+count=0
+while [ ! -d "$dcc_dir" ] && [ $count -lt 30 ]; do
+    sleep 0.1
+    count=$((count + 1))
+done
+
 # Check if DCC is enabled
-if [ ! -d $DCC_PATH/$DCC_DEV_NAME ]; then
+if [ ! -d "$dcc_dir" ]; then
     echo "QCOM DCC not enabled"
     exit 1
 fi
