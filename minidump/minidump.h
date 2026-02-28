@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #ifndef __MINIDUMP_H
@@ -79,12 +79,7 @@ extern struct md_region md_get_region(char *name);
 extern void dump_stack_minidump(u64 sp);
 extern int msm_minidump_get_available_region(void);
 
-#if IS_ENABLED(CONFIG_QCOM_MINIDUMP_PANIC_DUMP)
 extern void md_dump_process(void);
-#else
-static inline void md_dump_process(void) {}
-#endif
-
 
 #define MAX_OWNER_STRING	32
 struct va_md_entry {
