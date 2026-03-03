@@ -44,7 +44,7 @@ static int build_md_region_from_reg(struct device_node *np,
 
 		mdr->phys_addr = res.start;
 		/* FirmwareVM's mem does not need to be parsed by ramparser */
-		mdr->virt_addr = 0;
+		mdr->virt_addr = phys_to_virt(res.start);
 		mdr->size      = resource_size(&res);
 		mdr->id        = 0;
 
