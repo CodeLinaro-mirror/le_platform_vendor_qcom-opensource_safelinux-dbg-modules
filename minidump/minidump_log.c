@@ -1113,18 +1113,31 @@ static void md_dump_ktask_stack(void)
 
 	for_each_process_thread(g, t) {
 		state = READ_ONCE(t->__state);
+
 		if ((state & TASK_UNINTERRUPTIBLE) && !(state & TASK_WAKEKILL)
-					&& !(state & TASK_NOLOAD))
+					&& !(state & TASK_NOLOAD)) {
+
+#if IS_ENABLED(CONFIG_DETECT_HUNG_TASK)
+			seq_buf_printf(md_ktask_stack_buf, "Task blocked for %lu seconds!",
+					(jiffies - READ_ONCE(t->last_switch_time)) / HZ);
+#else
+			/*
+			 * last_switch_time is only available if CONFIG_DETECT_HUNG_TASK=y
+			 * Without it, we just report the blocked task, but can’t compute duration
+			 */
 			seq_buf_printf(md_ktask_stack_buf,
-					"Task blocked for %ld seconds!",
-					(jiffies - t->last_switch_time) / HZ);
-		seq_buf_printf(md_ktask_stack_buf, "%d [%s]\n",
-				task_pid_nr(t), t->comm);
+				"Task blocked (duration unavailable: !CONFIG_DETECT_HUNG_TASK)!");
+#endif
+		}
+
+		seq_buf_printf(md_ktask_stack_buf, "%d [%s]\n", task_pid_nr(t), t->comm);
 		arch_stack_walk_t(dump_trace, NULL, t, NULL);
 		seq_buf_printf(md_ktask_stack_buf, "\n");
 	}
+
 	seq_buf_printf(md_ktask_stack_buf, "---ktask stack end---\n");
 }
+
 void md_dump_process(void)
 {
 	if (md_in_oops_handler)
