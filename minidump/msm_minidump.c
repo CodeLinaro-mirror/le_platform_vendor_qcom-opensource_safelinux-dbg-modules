@@ -66,7 +66,7 @@ struct md_elfhdr {
 
 /* Protect elfheader and smem table from deferred calls contention */
 static DEFINE_SPINLOCK(mdt_lock);
-static DEFINE_RWLOCK(mdt_remove_lock);
+static DEFINE_PER_CPU(raw_spinlock_t, mdt_update_lock);
 static struct md_table		*minidump_table;
 static struct md_rm_table	*minidump_rm_table;
 static struct md_elfhdr		minidump_elfheader;
@@ -628,6 +628,7 @@ int msm_minidump_update_region(int regno, const struct md_region *entry)
 {
 	int ret = 0;
 	unsigned long flags;
+	raw_spinlock_t *lock;
 
 	/* Ensure that init completes before we update regions */
 	if (!smp_load_acquire(&md_init_done))
@@ -636,15 +637,17 @@ int msm_minidump_update_region(int regno, const struct md_region *entry)
 	if (validate_region(entry) || (regno >= MAX_NUM_ENTRIES))
 		return -EINVAL;
 
-	read_lock_irqsave(&mdt_remove_lock, flags);
-	if (is_rm_minidump)
+	lock = get_cpu_ptr(&mdt_update_lock);
+	raw_spin_lock_irqsave(lock, flags);
+	put_cpu_ptr(&mdt_update_lock);
+	if (is_rm_minidump) {
 		ret = md_rm_update(regno, entry);
-	else {
+	} else {
 		ret = md_update_ss_toc(regno, entry);
 		md_update_elf_header(regno, entry);
 	}
-	read_unlock_irqrestore(&mdt_remove_lock, flags);
 
+	raw_spin_unlock_irqrestore(lock, flags);
 	return ret;
 }
 EXPORT_SYMBOL(msm_minidump_update_region);
@@ -713,7 +716,6 @@ int msm_minidump_add_region(const struct md_region *entry)
 
 out:
 	spin_unlock_irqrestore(&mdt_lock, flags);
-
 	return ret;
 }
 EXPORT_SYMBOL(msm_minidump_add_region);
@@ -791,7 +793,7 @@ static int md_remove_ss_toc(const struct md_region *entry)
 
 int msm_minidump_remove_region(const struct md_region *entry)
 {
-	int ret;
+	int ret, cpu;
 	unsigned long flags;
 
 	if (!entry)
@@ -807,18 +809,21 @@ int msm_minidump_remove_region(const struct md_region *entry)
 		return -EINVAL;
 
 	spin_lock_irqsave(&mdt_lock, flags);
-	write_lock(&mdt_remove_lock);
+	for_each_possible_cpu(cpu)
+		raw_spin_lock(&per_cpu(mdt_update_lock, cpu));
 
 	if (is_rm_minidump)
 		ret = md_rm_remove_region(entry);
 	else
 		ret = md_remove_ss_toc(entry);
 
-	write_unlock(&mdt_remove_lock);
-	spin_unlock_irqrestore(&mdt_lock, flags);
+	for_each_possible_cpu(cpu)
+		raw_spin_unlock(&per_cpu(mdt_update_lock, cpu));
 
+	spin_unlock_irqrestore(&mdt_lock, flags);
 	if (ret)
 		pr_info("Minidump is broken..disable Minidump collection\n");
+
 	return ret;
 }
 EXPORT_SYMBOL(msm_minidump_remove_region);
@@ -1179,11 +1184,13 @@ static int msm_minidump_driver_probe(struct platform_device *pdev)
 	struct md_global_toc *md_global_toc;
 	struct md_ss_toc *md_ss_toc;
 	unsigned long flags;
-	int ret;
+	int ret, cpu;
+
+	for_each_possible_cpu(cpu)
+		raw_spin_lock_init(&per_cpu(mdt_update_lock, cpu));
 
 	is_rm_minidump =
 		of_device_is_compatible(pdev->dev.of_node, "qcom,minidump-rm");
-
 
 	if (is_rm_minidump) {
 		ret = gh_rm_minidump_get_info();
