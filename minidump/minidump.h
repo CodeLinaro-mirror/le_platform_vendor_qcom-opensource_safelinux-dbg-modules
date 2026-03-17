@@ -13,7 +13,7 @@
 #include <linux/printk.h>
 #include <linux/stacktrace.h>
 #include <linux/page_ext.h>
-#define CONFIG_MINIDUMP_MAX_ENTRIES 200
+#define CONFIG_MINIDUMP_MAX_ENTRIES 400
 
 enum minidump_entry_cmd {
 	MINIDUMP_ADD,
