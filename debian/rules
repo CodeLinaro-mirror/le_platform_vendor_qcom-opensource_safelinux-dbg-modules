@@ -1,0 +1,24 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+export KDIR := /usr/src/kernel
+export M := $(CURDIR)
+
+override_dh_auto_build:
+	make modules
+
+override_dh_auto_install:
+	dh_auto_install --destdir=$(CURDIR)/debian/tmp
+	make KDIR=$(KDIR) INSTALL_MOD_PATH=$(CURDIR)/debian/tmp/ modules_install
+	mkdir -p "$(CURDIR)/debian/tmp/usr/lib/modules-load.d"
+	mkdir -p "$(CURDIR)/debian/tmp/usr/bin"
+	mkdir -p "$(CURDIR)/debian/tmp/etc/qcom_dcc"
+	mkdir -p "$(CURDIR)/debian/tmp/usr/lib/systemd/system"
+	cp extern_dbg_mod.conf $(CURDIR)/debian/tmp/usr/lib/modules-load.d/
+	cp ./qcom_dcc/qcom_dcc_sa8797.conf $(CURDIR)/debian/tmp/etc/qcom_dcc
+	cp ./qcom_dcc/qcom_dcc_config.sh $(CURDIR)/debian/tmp/usr/bin
+	cp ./qcom_dcc/qcom-dcc.service $(CURDIR)/debian/tmp/usr/lib/systemd/system
+
+.PHONY: clean
+clean:

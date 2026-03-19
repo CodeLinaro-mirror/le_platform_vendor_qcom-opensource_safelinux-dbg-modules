@@ -1,5 +1,5 @@
 INSPATH ?= $(KDIR)
-TOP_DIR := $(PWD)
+TOP_DIR := $(M)
 export TOP_DIR
 
 obj-m := minidump/
@@ -24,7 +24,7 @@ KERNEL_VERSION ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KERNEL_VERSION)/build
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(M) clean
 
 %:
-	$(MAKE) -C $(KDIR) M=$(PWD) $@
+	$(MAKE) -C $(KDIR) M=$(M) $@

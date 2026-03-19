@@ -1,0 +1,12 @@
+Source: safelinux-dbg-modules
+Section: devel
+Priority: optional
+Maintainer: xwang6 <xwang6@qti.qualcomm.com>
+Build-Depends: debhelper-compat (= 13), linux-qcom-source
+Standards-Version: 4.6.0
+Homepage: 
+
+Package: safelinux-dbg-modules
+Architecture: arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: QCOM OOT debug kernel drivers
