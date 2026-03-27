@@ -4,6 +4,9 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
+#include <linux/io.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/cache.h>
 #include <linux/freezer.h>
 #include <linux/bitops.h>
@@ -1651,6 +1654,59 @@ static int md_kmsg_dump_register(void)
 	return ret;
 }
 
+static int md_journal_dump_register(void)
+{
+    struct device_node *journal_node;
+    struct resource res;
+    struct md_region md_entry;
+    phys_addr_t phys_addr;
+    void *virt_addr;
+    size_t size;
+    int ret;
+
+    journal_node = of_find_compatible_node(NULL, NULL, "qcom,minidump-journal");
+    if (!journal_node) {
+        pr_err("Minidump: journal DT node not found\n");
+        return -ENODEV;
+    }
+
+    ret = of_address_to_resource(journal_node, 0, &res);
+    of_node_put(journal_node);
+    if (ret) {
+        pr_err("Minidump: of_address_to_resource failed ret=%d\n", ret);
+        return ret;
+    }
+
+    phys_addr = res.start;
+    size = resource_size(&res);
+
+    virt_addr = memremap(phys_addr, size, MEMREMAP_WB);
+    if (!virt_addr) {
+        pr_err("Minidump: memremap failed for phys=0x%llx size=0x%zx\n",
+               (unsigned long long)phys_addr, size);
+        return -ENOMEM;
+    }
+
+    memset(&md_entry, 0, sizeof(md_entry));
+
+    strscpy(md_entry.name, "PVM_JRNL", sizeof(md_entry.name));
+    md_entry.virt_addr = (uintptr_t)virt_addr;
+    md_entry.phys_addr = phys_addr;
+    md_entry.size = ALIGN(size, 4);
+
+    ret = msm_minidump_add_region(&md_entry);
+    if (ret < 0) {
+        pr_err("Minidump: msm_minidump_add_region failed ret=%d\n", ret);
+        memunmap(virt_addr);
+        return ret;
+    }
+
+    pr_info("Minidump: Registered PVM_JRNL phys=0x%llx size=0x%zx slot=%d\n",
+            (unsigned long long)phys_addr, size, ret);
+    return 0;
+}
+
+
 int msm_minidump_log_init(void)
 {
 	int ret;
@@ -1668,6 +1724,12 @@ int msm_minidump_log_init(void)
 	ret = md_kmsg_dump_register();
 	if (ret < 0)
 		return ret;
+
+	ret = md_journal_dump_register();
+	if (ret < 0) {
+		pr_err("Minidump: Failed to register journal region\n");
+		return ret;
+	}
 
 	register_kernel_sections();
 	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
