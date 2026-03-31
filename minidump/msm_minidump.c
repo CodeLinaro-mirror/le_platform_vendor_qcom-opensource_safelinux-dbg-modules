@@ -66,7 +66,7 @@ struct md_elfhdr {
 
 /* Protect elfheader and smem table from deferred calls contention */
 static DEFINE_SPINLOCK(mdt_lock);
-static DEFINE_RWLOCK(mdt_remove_lock);
+static DEFINE_RAW_SPINLOCK(mdt_remove_lock);
 static struct md_table		*minidump_table;
 static struct md_rm_table	*minidump_rm_table;
 static struct md_elfhdr		minidump_elfheader;
@@ -636,14 +636,14 @@ int msm_minidump_update_region(int regno, const struct md_region *entry)
 	if (validate_region(entry) || (regno >= MAX_NUM_ENTRIES))
 		return -EINVAL;
 
-	read_lock_irqsave(&mdt_remove_lock, flags);
+	raw_spin_lock_irqsave(&mdt_remove_lock, flags);
 	if (is_rm_minidump)
 		ret = md_rm_update(regno, entry);
 	else {
 		ret = md_update_ss_toc(regno, entry);
 		md_update_elf_header(regno, entry);
 	}
-	read_unlock_irqrestore(&mdt_remove_lock, flags);
+	raw_spin_unlock_irqrestore(&mdt_remove_lock, flags);
 
 	return ret;
 }
@@ -713,7 +713,6 @@ int msm_minidump_add_region(const struct md_region *entry)
 
 out:
 	spin_unlock_irqrestore(&mdt_lock, flags);
-
 	return ret;
 }
 EXPORT_SYMBOL(msm_minidump_add_region);
@@ -807,14 +806,14 @@ int msm_minidump_remove_region(const struct md_region *entry)
 		return -EINVAL;
 
 	spin_lock_irqsave(&mdt_lock, flags);
-	write_lock(&mdt_remove_lock);
+	raw_spin_lock(&mdt_remove_lock);
 
 	if (is_rm_minidump)
 		ret = md_rm_remove_region(entry);
 	else
 		ret = md_remove_ss_toc(entry);
 
-	write_unlock(&mdt_remove_lock);
+	raw_spin_unlock(&mdt_remove_lock);
 	spin_unlock_irqrestore(&mdt_lock, flags);
 
 	if (ret)
