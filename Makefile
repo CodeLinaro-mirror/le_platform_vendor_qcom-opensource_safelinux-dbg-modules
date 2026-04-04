@@ -17,6 +17,7 @@ obj-m += memory_dump_v2/
 endif
 
 obj-m += nhlos_log/
+obj-m += firmware_vm_mini_dump/
 
 all: clean modules
 
