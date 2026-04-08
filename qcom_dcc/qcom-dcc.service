@@ -3,7 +3,7 @@
 
 [Unit]
 Description=Configure QCOM DCC registers
-After=systemd-modules-load.service
+After=qdss-service.service
 
 [Service]
 Type=oneshot
