@@ -40,6 +40,7 @@
 
 #include <asm/memory.h>
 
+#include <linux/sched/cputime.h>
 #include <linux/kdebug.h>
 #include <linux/thread_info.h>
 #include <asm/ptrace.h>
@@ -49,6 +50,7 @@
 #include <linux/module.h>
 #include <linux/cma.h>
 #include <linux/dma-map-ops.h>
+#include <linux/sched/clock.h>
 #include "minidump_memory.h"
 
 #include <linux/kmsg_dump.h>
@@ -81,13 +83,23 @@ static struct md_suspend_context_data md_suspend_context;
 
 static bool is_vmap_stack __read_mostly;
 
-#include <linux/ring_buffer.h>
+/* Runqueue information */
+#define MD_RUNQUEUE_PAGES_FULL	150
+#define MD_RUNQUEUE_PAGES_PART	8
+#define MD_RUNQUEUE_MODE_FULL	1
+#define MD_RUNQUEUE_PAGES	MD_RUNQUEUE_PAGES_FULL
+#define MD_RUNQUEUE_MODE	MD_RUNQUEUE_MODE_FULL
 
-#define MD_FTRACE_BUF_SIZE	SZ_2M
-
-static char *md_ftrace_buf_addr;
-
-#define MD_RUNQUEUE_PAGES	150
+per_cpu_ptr_to_phys_fn per_cpu_ptr_to_phys_t;
+arch_stack_walk_fn arch_stack_walk_t;
+cma_alloc_fn cma_alloc_t;
+cma_release_fn cma_release_t;
+pcpu_nr_pages_fn pcpu_nr_pages_t;
+get_slabinfo_fn get_slabinfo_t;
+si_swapinfo_fn si_swapinfo_t;
+vmalloc_nr_pages_fn vmalloc_nr_pages_t;
+page_ext_get_fn page_ext_get_t;
+page_ext_put_fn page_ext_put_t;
 
 static bool md_in_oops_handler;
 static atomic_t md_handle_done;
@@ -100,7 +112,8 @@ static int die_cpu = -1;
 static struct seq_buf *md_cntxt_seq_buf;
 
 /* Meminfo */
-static struct seq_buf *md_meminfo_seq_buf;
+#define MD_KTASK_STACK_PAGES	64
+static struct seq_buf *md_ktask_stack_buf;
 
 /* Modules information */
 #ifdef CONFIG_MODULES
@@ -113,7 +126,6 @@ static char *key_modules[10];
 module_param_array(key_modules, charp, &n_modump, 0644);
 #endif	/* CONFIG_MODULES */
 
-typedef phys_addr_t (*percpu_ptr_to_phys_fn)(void *);
 void *kmsg_buf;
 /* Allocate 256KB for DMESG buffer as default value */
 unsigned long kmsg_dump_sz  = (256 * 1024);
@@ -134,9 +146,41 @@ static int register_stack_entry(struct md_region *ksp_entry, u64 sp, u64 size)
 
 	entry = msm_minidump_add_region(ksp_entry);
 	if (entry < 0)
-		pr_info("Failed to add stack of entry %s in Minidump\n",
+		printk_deferred("Failed to add stack of entry %s in Minidump\n",
 				ksp_entry->name);
+
 	return entry;
+}
+
+#define KALLSYMS_LOOKUP_FUNCTION(func)					\
+do {									\
+	unsigned long ___addr_ul = kallsyms_lookup_name(#func);		\
+	if (likely(___addr_ul)) {					\
+		func##_t = (func##_fn)(uintptr_t)___addr_ul;		\
+	} else {							\
+		pr_err("minidump: symbol %s not found\n", #func);	\
+		error |= 1;						\
+	}								\
+} while (0)
+
+static int lookup_core_kernel_symbols(void)
+{
+	int error = 0;
+
+	KALLSYMS_LOOKUP_FUNCTION(per_cpu_ptr_to_phys);
+	KALLSYMS_LOOKUP_FUNCTION(arch_stack_walk);
+	KALLSYMS_LOOKUP_FUNCTION(cma_alloc);
+	KALLSYMS_LOOKUP_FUNCTION(cma_release);
+	KALLSYMS_LOOKUP_FUNCTION(pcpu_nr_pages);
+	KALLSYMS_LOOKUP_FUNCTION(get_slabinfo);
+	KALLSYMS_LOOKUP_FUNCTION(si_swapinfo);
+	KALLSYMS_LOOKUP_FUNCTION(vmalloc_nr_pages);
+	KALLSYMS_LOOKUP_FUNCTION(page_ext_get);
+	KALLSYMS_LOOKUP_FUNCTION(page_ext_put);
+	if (error)
+		return error;
+
+	return 0;
 }
 
 static void register_kernel_sections(void)
@@ -181,10 +225,8 @@ static void register_kernel_sections(void)
 
 	base = (void __percpu *)kallsyms_lookup_name("__per_cpu_start");
 	end = (void __percpu *)kallsyms_lookup_name("__per_cpu_end");
-	percpu_ptr_to_phys_fn percpu_ptr_to_phys =
-			(percpu_ptr_to_phys_fn)(uintptr_t)
-			kallsyms_lookup_name("per_cpu_ptr_to_phys");
-	if (!base || !end || !percpu_ptr_to_phys) {
+
+	if (!base || !end || !per_cpu_ptr_to_phys_t) {
 		pr_err("minidump: Skipping percpu sections due to missing symbol\n");
 	} else {
 		static_size = (size_t)((char *)end - (char *)base);
@@ -196,7 +238,7 @@ static void register_kernel_sections(void)
 			scnprintf(ksec_entry.name, sizeof(ksec_entry.name),
 							  "KSPERCPU%d", cpu);
 			ksec_entry.virt_addr = (uintptr_t)start;
-			ksec_entry.phys_addr = percpu_ptr_to_phys(start);
+			ksec_entry.phys_addr = per_cpu_ptr_to_phys_t(start);
 			ksec_entry.size = static_size;
 			if (msm_minidump_add_region(&ksec_entry) < 0)
 				pr_err("Failed to add percpu sections in Minidump\n");
@@ -235,9 +277,6 @@ void dump_stack_minidump(u64 sp)
 	u32 cpu = smp_processor_id();
 	struct vm_struct *stack_vm_area;
 	unsigned int i, copy_pages;
-
-	if (IS_ENABLED(CONFIG_QCOM_DYN_MINIDUMP_STACK))
-		return;
 
 	if (is_idle_task(current))
 		return;
@@ -293,7 +332,7 @@ static void update_stack_entry(struct md_region *ksp_entry, u64 sp,
 		ksp_entry->phys_addr = virt_to_phys((uintptr_t *)sp);
 	}
 	if (msm_minidump_update_region(mdno, ksp_entry) < 0) {
-		pr_info("Failed to update stack entry %s in minidump\n",
+		printk_deferred("Failed to update stack entry %s in minidump\n",
 			ksp_entry->name);
 	}
 }
@@ -362,7 +401,8 @@ static void update_md_cpu_stack(struct task_struct *tsk, u32 cpu, u64 sp)
 }
 
 void md_current_stack_notifer(void *ignore, bool preempt,
-		struct task_struct *prev, struct task_struct *next)
+		struct task_struct *prev, struct task_struct *next,
+		unsigned int prev_state)
 {
 	u32 cpu = task_cpu(next);
 	u64 sp = (u64)next->stack;
@@ -421,6 +461,49 @@ static void update_md_suspend_currents(void)
 		return;
 	update_md_suspend_current_stack();
 	update_md_suspend_current_task();
+}
+
+static void register_current_stack(void)
+{
+	int cpu;
+	u64 sp = current_stack_pointer;
+	struct md_stack_cpu_data *md_stack_cpu_d;
+	struct vm_struct *stack_vm_area;
+	char name_str[MAX_NAME_LENGTH];
+
+	/*
+	 * Since stacks are now allocated with vmalloc, the translation to
+	 * physical address is not a simple linear transformation like it is
+	 * for kernel logical addresses, since vmalloc creates a virtual
+	 * mapping. Thus, virt_to_phys() should not be used in this context;
+	 * instead the page table must be walked to acquire the physical
+	 * address of all pages of the stack.
+	 */
+	if (likely(is_vmap_stack)) {
+		stack_vm_area = task_stack_vm_area(current);
+		sp = (u64)stack_vm_area->addr;
+	}
+
+	for_each_possible_cpu(cpu) {
+		/*
+		 * Let's register dummies for now,
+		 * once system up and running, let the cpu update its currents.
+		 */
+		md_stack_cpu_d = &per_cpu(md_stack_data, cpu);
+		scnprintf(name_str, sizeof(name_str), "KSTACK%d", cpu);
+		if (is_vmap_stack)
+			register_vmapped_stack(md_stack_cpu_d->stack_mdr,
+				md_stack_cpu_d->stack_mdidx, sp,
+				name_str, false);
+		else
+			register_normal_stack(md_stack_cpu_d->stack_mdr,
+				md_stack_cpu_d->stack_mdidx, sp,
+				name_str, false);
+	}
+
+	register_trace_sched_switch(md_current_stack_notifer, NULL);
+	md_current_stack_init = 1;
+	smp_call_function(md_current_stack_ipi_handler, NULL, 1);
 }
 
 static void register_suspend_stack(void)
@@ -487,26 +570,43 @@ static void register_suspend_context(void)
 	md_suspend_context.init = true;
 }
 
-static void md_register_trace_buf(void)
+static void register_irq_stack(void)
 {
-	struct md_region md_entry;
-	void *buffer_start;
+	int cpu;
+	unsigned int i;
+	int irq_stack_pages_count;
+	u64 irq_stack_base;
+	struct md_region irq_sp_entry;
+	u64 sp;
+	u64 *irq_stack_ptr;
 
-	buffer_start = kzalloc(MD_FTRACE_BUF_SIZE, GFP_KERNEL);
-
-	if (!buffer_start)
+	irq_stack_ptr = (u64 *)kallsyms_lookup_name("irq_stack_ptr");
+	if (!irq_stack_ptr) {
+		pr_err("minidump: Unable to find symbol \'irq_stack_ptr\'\n");
 		return;
+	}
 
-	strscpy(md_entry.name, "KFTRACE", sizeof(md_entry.name));
-	md_entry.virt_addr = (uintptr_t)buffer_start;
-	md_entry.phys_addr = virt_to_phys(buffer_start);
-	md_entry.size = MD_FTRACE_BUF_SIZE;
-	if (msm_minidump_add_region(&md_entry) < 0)
-		pr_err("Failed to add ftrace buffer entry in Minidump\n");
-
-	/* Complete registration before adding enteries */
-	smp_mb();
-	WRITE_ONCE(md_ftrace_buf_addr, buffer_start);
+	for_each_possible_cpu(cpu) {
+		irq_stack_base =
+			*(u64 *)(per_cpu_ptr((void *)irq_stack_ptr, cpu));
+		if (is_vmap_stack) {
+			irq_stack_pages_count = IRQ_STACK_SIZE / PAGE_SIZE;
+			sp = irq_stack_base & ~(PAGE_SIZE - 1);
+			for (i = 0; i < irq_stack_pages_count; i++) {
+				scnprintf(irq_sp_entry.name,
+				sizeof(irq_sp_entry.name),
+					"KISTK%d_%d", cpu, i);
+				register_stack_entry(&irq_sp_entry, sp,
+					PAGE_SIZE);
+				sp += PAGE_SIZE;
+			}
+		} else {
+			sp = irq_stack_base;
+			scnprintf(irq_sp_entry.name, sizeof(irq_sp_entry.name),
+				"KISTK%d", cpu);
+			register_stack_entry(&irq_sp_entry, sp, IRQ_STACK_SIZE);
+		}
+	}
 }
 
 static void md_dump_align(void)
@@ -532,7 +632,7 @@ static void md_dump_task_info(struct task_struct *task, char *status,
 	se = &task->se;
 	if (task == curr) {
 		seq_buf_printf(md_runq_seq_buf,
-			       "[status: curr] pid: %d preempt: %#x\n",
+			       "[status: curr] pid: %d preempt: %#llx\n",
 			       task_pid_nr(task),
 			       task->thread_info.preempt_count);
 		return;
@@ -607,6 +707,33 @@ static void md_dump_cfs_rq(struct cfs_rq *cfs, struct task_struct *curr)
 	md_rb_walk_cfs(rb_root_cached_p, curr);
 }
 
+static void md_dump_rt_rq(struct rt_rq  *rt_rq, struct task_struct *curr)
+{
+	struct rt_prio_array *array = &rt_rq->active;
+	struct sched_rt_entity *rt_se;
+	int idx;
+
+	/* Lifted most of the below code from dump_throttled_rt_tasks() */
+	if (bitmap_empty(array->bitmap, MAX_RT_PRIO))
+		return;
+
+	idx = sched_find_first_bit(array->bitmap);
+	while (idx < MAX_RT_PRIO) {
+		list_for_each_entry(rt_se, array->queue + idx, run_list) {
+			struct task_struct *p;
+
+#ifdef CONFIG_RT_GROUP_SCHED
+			if (rt_se->my_q)
+				continue;
+#endif
+
+			p = container_of(rt_se, struct task_struct, rt);
+			md_dump_task_info(p, "pend", curr);
+		}
+		idx = find_next_bit(array->bitmap, MAX_RT_PRIO, idx + 1);
+	}
+}
+
 static const char * const task_state_array[] = {
 	"R", /* 0x00 */
 	"S", /* 0x01 */
@@ -637,12 +764,174 @@ static inline const char *md_get_task_state(struct task_struct *tsk)
 	return task_state_array[md_task_state_index(tsk)];
 }
 
+static void md_dump_next_event(void)
+{
+	int cpu;
+	struct tick_device *device_dump;
+	struct clock_event_device *event_dev;
+
+	device_dump =
+		(struct tick_device *)kallsyms_lookup_name("tick_cpu_device");
+	if (!device_dump) {
+		pr_err("minidump: Unable to find symbol \'tick_cpu_device\'\n");
+		return;
+	}
+
+	for_each_possible_cpu(cpu) {
+		event_dev = per_cpu(device_dump->evtdev, cpu);
+		if (event_dev)
+			pr_emerg("CPU%d next event is %lld\n", cpu,
+				event_dev->next_event);
+		else
+			pr_emerg("CPU%d next event is not available\n", cpu);
+	}
+}
+
+static int task_info = MD_RUNQUEUE_MODE;
+static int task_info_pages = MD_RUNQUEUE_PAGES;
+
+static int update_task_info_entry(size_t new_size)
+{
+	int ret;
+	char *buf;
+	struct md_region md_entry;
+
+	scnprintf(md_entry.name, sizeof(md_entry.name), "KRUNQUEUE");
+	md_entry.virt_addr = (u64)md_runq_seq_buf->buffer;
+	md_entry.phys_addr = virt_to_phys((uintptr_t *)md_runq_seq_buf->buffer);
+	md_entry.size = md_runq_seq_buf->size;
+
+	ret = msm_minidump_remove_region(&md_entry);
+	if (ret < 0) {
+		pr_err("Failed to remove entry\n");
+		return ret;
+	}
+
+	buf = kzalloc(new_size, GFP_KERNEL);
+	if (!buf) {
+		msm_minidump_add_region(&md_entry);
+		return -ENOMEM;
+	}
+
+	md_entry.virt_addr = (u64)buf;
+	md_entry.phys_addr = virt_to_phys((uintptr_t *)buf);
+	md_entry.size = new_size;
+
+	ret = msm_minidump_add_region(&md_entry);
+	if (ret < 0) {
+		pr_err("Failed to add entry\n");
+		kfree(buf);
+		return ret;
+	}
+
+	kfree(md_runq_seq_buf->buffer);
+	md_runq_seq_buf->buffer = buf;
+	md_runq_seq_buf->size = new_size;
+	seq_buf_clear(md_runq_seq_buf);
+
+	return 0;
+}
+
+static int task_info_set(const char *val, const struct kernel_param *kp)
+{
+	int ret, old_val, pages;
+
+	old_val = task_info;
+	ret = param_set_int(val, kp);
+
+	if (ret || task_info > 1 || task_info < 0) {
+		task_info = old_val;
+		return -EINVAL;
+	}
+
+	if (old_val == task_info)
+		return 0;
+
+	if (task_info == MD_RUNQUEUE_MODE_FULL)
+		pages = MD_RUNQUEUE_PAGES_FULL;
+	else
+		pages = MD_RUNQUEUE_PAGES_PART;
+
+	ret = update_task_info_entry(pages * PAGE_SIZE);
+	if (ret) {
+		task_info = old_val;
+		return ret;
+	}
+
+	task_info_pages = pages;
+	return 0;
+}
+
+static int task_info_get(char *buffer, const struct kernel_param *kp)
+{
+	return scnprintf(buffer, PAGE_SIZE, "%s\n",
+		task_info ? "1 - Full" : "0 - Part");
+}
+
+static const struct kernel_param_ops task_info_ops = {
+	.set = task_info_set,
+	.get = task_info_get,
+};
+module_param_cb(task_info, &task_info_ops, &task_info, 0644);
+
+static int task_info_pages_set(const char *val, const struct kernel_param *kp)
+{
+	int ret, old_val;
+
+	old_val = task_info_pages;
+	ret = param_set_int(val, kp);
+	if (ret || task_info_pages > KMALLOC_MAX_SIZE / PAGE_SIZE
+			|| task_info_pages < 0) {
+		task_info_pages = old_val;
+		return -EINVAL;
+	}
+
+	if (old_val == task_info_pages)
+		return 0;
+
+	ret = update_task_info_entry(task_info_pages * PAGE_SIZE);
+	if (ret) {
+		task_info_pages = old_val;
+		return ret;
+	}
+
+	return 0;
+}
+
+static const struct kernel_param_ops task_info_pages_ops = {
+	.set = task_info_pages_set,
+	.get = param_get_int,
+};
+module_param_cb(task_info_pages, &task_info_pages_ops, &task_info_pages, 0644);
+
 static void md_dump_runqueues(void)
 {
+	int cpu;
+	struct rq *rq;
+	struct rt_rq  *rt;
+	struct cfs_rq *cfs;
 	struct task_struct *p, *t;
 
 	if (!md_runq_seq_buf)
 		return;
+
+	for_each_possible_cpu(cpu) {
+		rq = cpu_rq(cpu);
+		rt = &rq->rt;
+		cfs = &rq->cfs;
+		seq_buf_printf(md_runq_seq_buf,
+			       "CPU%d has %d process, current is pid %d\n",
+			       cpu, rq->nr_running, cpu_curr(cpu)->pid);
+		seq_buf_printf(md_runq_seq_buf,
+			       "CFS has %d process\n",
+			       cfs->nr_running);
+		md_dump_cfs_rq(cfs, cpu_curr(cpu));
+		seq_buf_printf(md_runq_seq_buf,
+			       "RT has %d process\n",
+			       rt->rt_nr_running);
+		md_dump_rt_rq(rt, cpu_curr(cpu));
+		seq_buf_printf(md_runq_seq_buf, "\n");
+	}
 
 	seq_buf_printf(md_runq_seq_buf, "%-15s", "Task name");
 	seq_buf_printf(md_runq_seq_buf, "%*s", 6, "PID");
@@ -656,13 +945,15 @@ static void md_dump_runqueues(void)
 	seq_buf_printf(md_runq_seq_buf, "\n");
 
 	for_each_process_thread(p, t) {
+		if (task_info == 0 && READ_ONCE(t->__state))
+			continue;
 		seq_buf_printf(md_runq_seq_buf, "%-15s", t->comm);
 		seq_buf_printf(md_runq_seq_buf, "%6d", t->pid);
 		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.last_arrival);
 		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.last_queued);
 		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.run_delay);
 		seq_buf_printf(md_runq_seq_buf, "%12ld", t->sched_info.pcount);
-		seq_buf_printf(md_runq_seq_buf, "%4d", t->on_cpu);
+		seq_buf_printf(md_runq_seq_buf, "%4d", t->thread_info.cpu);
 		seq_buf_printf(md_runq_seq_buf, "%5d", t->prio);
 		seq_buf_printf(md_runq_seq_buf, "%*s", 6, md_get_task_state(t));
 		seq_buf_printf(md_runq_seq_buf, "\n");
@@ -806,99 +1097,45 @@ static struct notifier_block md_die_context_nb = {
 	.priority = INT_MAX - 2, /* < msm watchdog die notifier */
 };
 
-static void show_val_kb(struct seq_buf *m, const char *s, unsigned long num)
+static bool dump_trace(void *arg, unsigned long where)
 {
-	seq_buf_printf(m, "%s : %lld KB\n", s, num << (PAGE_SHIFT - 10));
+	seq_buf_printf(md_ktask_stack_buf, "%pSb\n", (void *)where);
+	return true;
 }
 
-void md_dump_meminfo(struct seq_buf *m)
+static void md_dump_ktask_stack(void)
 {
-	struct sysinfo i;
-	long cached;
-	long available;
-	unsigned long pages[NR_LRU_LISTS];
-	unsigned long sreclaimable, sunreclaim;
-	int lru;
+	struct task_struct *g, *t;
+	unsigned int state;
 
-	si_meminfo(&i);
+	if (!md_ktask_stack_buf)
+		return;
 
-	cached = global_node_page_state(NR_FILE_PAGES) -
-			total_swapcache_pages() - i.bufferram;
-	if (cached < 0)
-		cached = 0;
+	for_each_process_thread(g, t) {
+		state = READ_ONCE(t->__state);
 
-	for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
-		pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
+		if ((state & TASK_UNINTERRUPTIBLE) && !(state & TASK_WAKEKILL)
+					&& !(state & TASK_NOLOAD)) {
 
-	available = si_mem_available();
-	sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
-	sunreclaim = global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B);
-
-	show_val_kb(m, "MemTotal:       ", i.totalram);
-	show_val_kb(m, "MemFree:        ", i.freeram);
-	show_val_kb(m, "MemAvailable:   ", available);
-	show_val_kb(m, "Buffers:        ", i.bufferram);
-	show_val_kb(m, "Cached:         ", cached);
-	show_val_kb(m, "SwapCached:     ", total_swapcache_pages());
-	show_val_kb(m, "Active:         ", pages[LRU_ACTIVE_ANON] +
-					   pages[LRU_ACTIVE_FILE]);
-	show_val_kb(m, "Inactive:       ", pages[LRU_INACTIVE_ANON] +
-					   pages[LRU_INACTIVE_FILE]);
-	show_val_kb(m, "Active(anon):   ", pages[LRU_ACTIVE_ANON]);
-	show_val_kb(m, "Inactive(anon): ", pages[LRU_INACTIVE_ANON]);
-	show_val_kb(m, "Active(file):   ", pages[LRU_ACTIVE_FILE]);
-	show_val_kb(m, "Inactive(file): ", pages[LRU_INACTIVE_FILE]);
-	show_val_kb(m, "Unevictable:    ", pages[LRU_UNEVICTABLE]);
-	show_val_kb(m, "Mlocked:        ", global_zone_page_state(NR_MLOCK));
-
-#ifdef CONFIG_HIGHMEM
-	show_val_kb(m, "HighTotal:      ", i.totalhigh);
-	show_val_kb(m, "HighFree:       ", i.freehigh);
-	show_val_kb(m, "LowTotal:       ", i.totalram - i.totalhigh);
-	show_val_kb(m, "LowFree:        ", i.freeram - i.freehigh);
+#if IS_ENABLED(CONFIG_DETECT_HUNG_TASK)
+			seq_buf_printf(md_ktask_stack_buf, "Task blocked for %lu seconds!",
+					(jiffies - READ_ONCE(t->last_switch_time)) / HZ);
+#else
+			/*
+			 * last_switch_time is only available if CONFIG_DETECT_HUNG_TASK=y
+			 * Without it, we just report the blocked task, but can’t compute duration
+			 */
+			seq_buf_printf(md_ktask_stack_buf,
+				"Task blocked (duration unavailable: !CONFIG_DETECT_HUNG_TASK)!");
 #endif
+		}
 
-	show_val_kb(m, "Dirty:          ",
-		    global_node_page_state(NR_FILE_DIRTY));
-	show_val_kb(m, "Writeback:      ",
-		    global_node_page_state(NR_WRITEBACK));
-	show_val_kb(m, "AnonPages:      ",
-		    global_node_page_state(NR_ANON_MAPPED));
-	show_val_kb(m, "Mapped:         ",
-		    global_node_page_state(NR_FILE_MAPPED));
-	show_val_kb(m, "Shmem:          ", i.sharedram);
-	show_val_kb(m, "KReclaimable:   ", sreclaimable +
-		    global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE));
-	show_val_kb(m, "Slab:           ", sreclaimable + sunreclaim);
-	show_val_kb(m, "SReclaimable:   ", sreclaimable);
-	show_val_kb(m, "SUnreclaim:     ", sunreclaim);
-	seq_buf_printf(m, "KernelStack:    %8lu kB\n",
-		   global_node_page_state(NR_KERNEL_STACK_KB));
-#ifdef CONFIG_SHADOW_CALL_STACK
-	seq_buf_printf(m, "ShadowCallStack:%8lu kB\n",
-		   global_node_page_state(NR_KERNEL_SCS_KB));
-#endif
-	show_val_kb(m, "PageTables:     ",
-		    global_node_page_state(NR_PAGETABLE));
-	show_val_kb(m, "Bounce:         ",
-		    global_zone_page_state(NR_BOUNCE));
-	show_val_kb(m, "WritebackTmp:   ",
-		    global_node_page_state(NR_WRITEBACK_TEMP));
-	seq_buf_printf(m, "VmallocTotal:   %8lu kB\n",
-		   (unsigned long)VMALLOC_TOTAL >> 10);
+		seq_buf_printf(md_ktask_stack_buf, "%d [%s]\n", task_pid_nr(t), t->comm);
+		arch_stack_walk_t(dump_trace, NULL, t, NULL);
+		seq_buf_printf(md_ktask_stack_buf, "\n");
+	}
 
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	show_val_kb(m, "AnonHugePages:  ",
-		    global_node_page_state(NR_ANON_THPS) * HPAGE_PMD_NR);
-	show_val_kb(m, "ShmemHugePages: ",
-		    global_node_page_state(NR_SHMEM_THPS) * HPAGE_PMD_NR);
-	show_val_kb(m, "ShmemPmdMapped: ",
-		    global_node_page_state(NR_SHMEM_PMDMAPPED) * HPAGE_PMD_NR);
-	show_val_kb(m, "FileHugePages:  ",
-		    global_node_page_state(NR_FILE_THPS) * HPAGE_PMD_NR);
-	show_val_kb(m, "FilePmdMapped:  ",
-		    global_node_page_state(NR_FILE_PMDMAPPED) * HPAGE_PMD_NR);
-#endif
+	seq_buf_printf(md_ktask_stack_buf, "---ktask stack end---\n");
 }
 
 void md_dump_process(void)
@@ -913,13 +1150,14 @@ void md_dump_process(void)
 	if (raw_smp_processor_id() != die_cpu)
 		md_dump_panic_regs();
 dump_rq:
+	md_dump_next_event();
 	md_dump_runqueues();
-	if (md_meminfo_seq_buf)
-		md_dump_meminfo(md_meminfo_seq_buf);
-
+	md_dump_ktask_stack();
+	md_dump_memory();
+	dump_stack_minidump(0);
 	md_in_oops_handler = false;
 }
-EXPORT_SYMBOL(md_dump_process);
+EXPORT_SYMBOL_GPL(md_dump_process);
 
 static int md_panic_handler(struct notifier_block *this,
 			    unsigned long event, void *ptr)
@@ -930,7 +1168,7 @@ static int md_panic_handler(struct notifier_block *this,
 
 static struct notifier_block md_panic_blk = {
 	.notifier_call = md_panic_handler,
-	.priority = INT_MAX - 2, /* < msm watchdog panic notifier */
+	.priority = INT_MAX - 3,
 };
 
 static int md_register_minidump_entry(char *name, u64 virt_addr,
@@ -949,7 +1187,7 @@ static int md_register_minidump_entry(char *name, u64 virt_addr,
 	return ret;
 }
 
-static int md_register_panic_entries(int num_pages, char *name,
+int md_register_panic_entries(int num_pages, char *name,
 				      struct seq_buf **global_buf)
 {
 	char *buf;
@@ -988,12 +1226,20 @@ err_seq_buf:
 
 static void md_register_panic_data(void)
 {
-	md_register_panic_entries(MD_RUNQUEUE_PAGES, "KRUNQUEUE",
-				  &md_runq_seq_buf);
+	int ret;
+
+	ret = md_minidump_memory_init();
+	if (ret) {
+		pr_err("Failed to look up all minidump memory symbols, rc: %d\n", ret);
+		return;
+	}
+
 	md_register_panic_entries(MD_CPU_CNTXT_PAGES, "KCNTXT",
 				  &md_cntxt_seq_buf);
-	md_register_panic_entries(MD_MEMINFO_PAGES, "MEMINFO",
-				  &md_meminfo_seq_buf);
+	md_register_panic_entries(MD_RUNQUEUE_PAGES, "KRUNQUEUE",
+				  &md_runq_seq_buf);
+	md_register_panic_entries(MD_KTASK_STACK_PAGES, "KTASK_STACK",
+				  &md_ktask_stack_buf);
 }
 
 static int register_vmap_mem(const char *name, void *virual_addr, size_t dump_len)
@@ -1042,12 +1288,12 @@ static int md_module_process(struct module *mod)
 
 	if (md_mod_info_seq_buf) {
 		base_addr = (unsigned long)mod->mem[MOD_TEXT].base;
-		seq_buf_printf(md_mod_info_seq_buf, "name: %s, base: %lx",
-				mod->name, base_addr);
+		seq_buf_printf(md_mod_info_seq_buf, "name: %s, base: %lx, nplt: %d",
+				mod->name, base_addr, mod->arch.core.plt_max_entries +
+				1 + NR_FTRACE_PLTS);
 		if (is_key_module) {
-			dump_start = base_addr +
-					mod->mem[MOD_RO_AFTER_INIT].size;
-			dump_end = base_addr + mod->mem[MOD_TEXT].size;
+			dump_start = (unsigned long)mod->mem[MOD_DATA].base;
+			dump_end = dump_start + mod->mem[MOD_DATA].size;
 			if (((dump_end - dump_start) / PAGE_SIZE) <
 				msm_minidump_get_available_region()) {
 				for (i = 0; i < mod->sect_attrs->nsections ; i++) {
@@ -1088,6 +1334,8 @@ static struct notifier_block md_module_nb = {
 static void md_register_module_data(void)
 {
 	int ret;
+	struct module *module;
+	struct list_head *module_list;
 
 	ret = md_register_panic_entries(MD_MODULE_PAGES, "KMODULES",
 					&md_mod_info_seq_buf);
@@ -1103,12 +1351,24 @@ static void md_register_module_data(void)
 		return;
 	}
 
+	module_list = (struct list_head *)kallsyms_lookup_name("modules");
+	if (!module_list) {
+		pr_err("minidump: Unable to find symbol \'modules\'\n");
+		return;
+	}
+
+	preempt_disable();
+	list_for_each_entry_rcu(module, module_list, list) {
+		if (module != THIS_MODULE)
+			md_module_process(module);
+	}
+	preempt_enable();
 }
 
 static void register_pstore_info(void)
 {
 	int ret;
-	struct device_node *node;
+	struct device_node *node, *tmp_node;
 	struct resource resource;
 	struct reserved_mem *rmem = NULL;
 	unsigned int size;
@@ -1116,20 +1376,29 @@ static void register_pstore_info(void)
 	unsigned long total_size;
 	struct md_region md_entry;
 
-	node = of_find_compatible_node(NULL, NULL, "ramoops");
-	if (IS_ERR_OR_NULL(node)) {
-		pr_err("Failed to get pstore node\n");
-		return;
+	node = tmp_node = of_find_compatible_node(NULL, NULL, "ramoops");
+	if (IS_ERR_OR_NULL(tmp_node)) {
+		node = of_find_compatible_node(NULL, NULL, "qcom,ramoops");
+		if (IS_ERR_OR_NULL(node)) {
+			pr_err("Failed to get ramoops node\n");
+			return;
+		}
+
+		tmp_node = of_parse_phandle(node, "memory-region", 0);
+		if (!tmp_node) {
+			pr_err("Failed to parse ramoops memory-region\n");
+			return;
+		}
 	}
 
-	ret = of_address_to_resource(node, 0, &resource);
+	ret = of_address_to_resource(tmp_node, 0, &resource);
 	if (ret) {
-		rmem = of_reserved_mem_lookup(node);
+		rmem = of_reserved_mem_lookup(tmp_node);
 		if (rmem) {
 			paddr = rmem->base;
 			total_size = rmem->size;
 		} else {
-			pr_err("Failed to get pstore mem\n");
+			pr_err("Failed to get ramoops mem\n");
 			return;
 		}
 	} else {
@@ -1241,8 +1510,13 @@ int msm_minidump_log_init(void)
 {
 	int ret;
 
-	kmsg_buf = kzalloc(kmsg_dump_sz, GFP_KERNEL);
+	ret = lookup_core_kernel_symbols();
+	if (ret) {
+		pr_err("Failed to lookup core kernel symbols, rc: %d\n", ret);
+		return ret;
+	}
 
+	kmsg_buf = kzalloc(kmsg_dump_sz, GFP_KERNEL);
 	if (!kmsg_buf)
 		return -ENOMEM;
 
@@ -1252,9 +1526,10 @@ int msm_minidump_log_init(void)
 
 	register_kernel_sections();
 	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
+	register_irq_stack();
+	register_current_stack();
 	register_suspend_context();
 	register_pstore_info();
-	md_register_trace_buf();
 	md_register_module_data();
 	md_register_panic_data();
 	atomic_notifier_chain_register(&panic_notifier_list, &md_panic_blk);
