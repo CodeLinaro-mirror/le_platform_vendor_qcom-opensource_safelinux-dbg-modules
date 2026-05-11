@@ -13,7 +13,7 @@
 #include <linux/printk.h>
 #include <linux/stacktrace.h>
 #include <linux/page_ext.h>
-#define CONFIG_MINIDUMP_MAX_ENTRIES 200
+#define CONFIG_MINIDUMP_MAX_ENTRIES 400
 
 enum minidump_entry_cmd {
 	MINIDUMP_ADD,
@@ -114,6 +114,7 @@ static inline int qcom_va_md_add_region(struct va_md_entry *entry)
 }
 #endif
 
+void boot_log_dump_exit(void);
 struct slabinfo;
 /* Declare pointers to the functions we will be looking up via kallsyms */
 typedef phys_addr_t (*per_cpu_ptr_to_phys_fn)(void *);

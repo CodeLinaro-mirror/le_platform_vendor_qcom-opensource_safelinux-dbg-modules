@@ -11,6 +11,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/kallsyms.h>
+#include <linux/kthread.h>
 #include <linux/rbtree.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -89,6 +90,14 @@ static bool is_vmap_stack __read_mostly;
 #define MD_RUNQUEUE_MODE_FULL	1
 #define MD_RUNQUEUE_PAGES	MD_RUNQUEUE_PAGES_FULL
 #define MD_RUNQUEUE_MODE	MD_RUNQUEUE_MODE_FULL
+
+#define BOOT_LOG_SIZE		SZ_512K
+static char *boot_log_buf;
+static char *boot_log_pos;
+static unsigned int boot_log_buf_size;
+static unsigned int boot_log_buf_left;
+static struct kmsg_dump_iter boot_log_iter;
+static struct task_struct *boot_log_dump_thread;
 
 per_cpu_ptr_to_phys_fn per_cpu_ptr_to_phys_t;
 arch_stack_walk_fn arch_stack_walk_t;
@@ -1459,6 +1468,142 @@ static void register_pstore_info(void)
 	}
 }
 
+static int boot_log_dump_thread_func(void *arg)
+{
+	size_t text_len;
+
+	while (!kthread_should_stop()) {
+		while (kmsg_dump_get_line(&boot_log_iter, true, boot_log_pos,
+					  boot_log_buf_left, &text_len)) {
+			if (text_len == 0)
+				break;
+			boot_log_pos += text_len;
+			boot_log_buf_left -= text_len;
+			if (!boot_log_buf_left)
+				goto out;
+		}
+		schedule_timeout_interruptible(HZ);
+	}
+out:
+	return 0;
+}
+
+static int boot_log_init(void)
+{
+	void *start;
+	int ret = 0;
+	unsigned int size = BOOT_LOG_SIZE;
+	struct md_region md_entry;
+
+	start = kzalloc(size, GFP_KERNEL);
+	if (!start) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	strscpy(md_entry.name, "KBOOT_LOG", sizeof(md_entry.name));
+	md_entry.virt_addr = (uintptr_t)start;
+	md_entry.phys_addr = virt_to_phys(start);
+	md_entry.size = size;
+	ret = msm_minidump_add_region(&md_entry);
+	if (ret < 0) {
+		pr_err("Failed to add boot_log entry in minidump table\n");
+		kfree(start);
+		goto out;
+	}
+
+	boot_log_buf_size = size;
+	boot_log_buf = start;
+	boot_log_pos = boot_log_buf;
+	boot_log_buf_left = boot_log_buf_size;
+
+	/*
+	 * Ensure boot_log_buf and boot_log_pos initialization
+	 * is visible to other CPUs.
+	 */
+	smp_mb();
+
+out:
+	return ret;
+}
+
+static int boot_log_panic_handler(struct notifier_block *this, unsigned long event, void *ptr)
+{
+	size_t text_len;
+
+	if (!boot_log_buf || !boot_log_buf_left)
+		return NOTIFY_DONE;
+
+	/*
+	 * Drain all remaining kernel messages into the boot log buffer
+	 * at panic time. The kthread may be sleeping (up to 1s delay),
+	 * so this ensures the last messages before the crash are captured.
+	 */
+	while (kmsg_dump_get_line(&boot_log_iter, true, boot_log_pos,
+				  boot_log_buf_left, &text_len)) {
+		if (text_len == 0)
+			break;
+		boot_log_pos += text_len;
+		boot_log_buf_left -= text_len;
+		if (!boot_log_buf_left)
+			break;
+	}
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block boot_log_panic_nb = {
+	.notifier_call = boot_log_panic_handler,
+	/*
+	 * Run before md_panic_blk (INT_MAX - 3) so the boot log is
+	 * fully flushed before the minidump collection begins.
+	 */
+	.priority = INT_MAX - 2,
+};
+
+static int boot_log_dump_init(void)
+{
+	int ret;
+	u64 dumped_line;
+	size_t text_len;
+
+	ret = boot_log_init();
+	if (ret < 0)
+		return ret;
+
+	kmsg_dump_rewind(&boot_log_iter);
+	dumped_line = boot_log_iter.next_seq;
+	kmsg_dump_get_buffer(&boot_log_iter, true, boot_log_buf, boot_log_buf_size, &text_len);
+	boot_log_pos += text_len;
+	boot_log_buf_left -= text_len;
+	boot_log_iter.cur_seq = dumped_line;
+
+	boot_log_dump_thread = kthread_run(boot_log_dump_thread_func, NULL, "boot_log_dump");
+	if (IS_ERR(boot_log_dump_thread)) {
+		pr_err("Failed to create boot_log_dump thread: %ld\n",
+				PTR_ERR(boot_log_dump_thread));
+		boot_log_dump_thread = NULL;
+	}
+
+	ret = atomic_notifier_chain_register(&panic_notifier_list, &boot_log_panic_nb);
+	if (ret)
+		pr_err("Failed to register boot_log panic notifier: %d\n", ret);
+
+	return 0;
+}
+
+void boot_log_dump_exit(void)
+{
+	atomic_notifier_chain_unregister(&panic_notifier_list, &boot_log_panic_nb);
+	if (boot_log_dump_thread) {
+		kthread_stop(boot_log_dump_thread);
+		boot_log_dump_thread = NULL;
+	}
+
+	kfree(boot_log_buf);
+	boot_log_buf = NULL;
+}
+
 static void md_kmsg_dump(struct kmsg_dumper *dumper,
 			enum kmsg_dump_reason reason)
 {
@@ -1534,6 +1679,11 @@ int msm_minidump_log_init(void)
 	md_register_panic_data();
 	atomic_notifier_chain_register(&panic_notifier_list, &md_panic_blk);
 	register_die_notifier(&md_die_context_nb);
+
+	ret = boot_log_dump_init();
+	if (ret < 0)
+		pr_err("Failed to initialize boot log dump, rc: %d\n", ret);
+
 	return 0;
 }
 
