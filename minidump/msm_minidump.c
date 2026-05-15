@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #define pr_fmt(fmt) "Minidump: " fmt
@@ -17,6 +17,7 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/slab.h>
+#include <linux/kallsyms.h>
 #include "gh_rm_drv.h"
 #include <linux/soc/qcom/smem.h>
 #include "minidump.h"
@@ -240,7 +241,7 @@ int msm_minidump_clear_headers(const struct md_region *entry)
 
 	}
 	if (i == hdr->e_phnum) {
-		pr_info("Cannot find entry in elf\n");
+		printk_deferred("Cannot find entry in elf\n");
 		return -EINVAL;
 	}
 	pidx = i;
@@ -255,13 +256,13 @@ int msm_minidump_clear_headers(const struct md_region *entry)
 
 	}
 	if (i == hdr->e_shnum) {
-		pr_info("Cannot find entry in elf\n");
+		printk_deferred("Cannot find entry in elf\n");
 		return -EINVAL;
 	}
 	shidx = i;
 
 	if (shdr->sh_offset != phdr->p_offset) {
-		pr_info("Invalid entry details in elf, Minidump broken..\n");
+		printk_deferred("Invalid entry details in elf, Minidump broken..\n");
 		return -EINVAL;
 	}
 
@@ -829,14 +830,19 @@ static int msm_minidump_add_header(void)
 	struct elf_shdr *shdr;
 	struct elf_phdr *phdr;
 	unsigned int strtbl_off, elfh_size, phdr_off;
-	char *banner, *linux_banner = "Linux";
+	char *banner, *linux_banner;
 	int slot_num;
 
-	//linux_banner = android_debug_symbol(ADS_LINUX_BANNER);
 	/* Header buffer contains:
 	 * elf header, MAX_NUM_ENTRIES+4 of section and program elf headers,
 	 * string table section and linux banner.
 	 */
+	linux_banner = (void *)kallsyms_lookup_name("linux_banner");
+	if (!linux_banner) {
+		pr_err("minidump: Unable to find 'linux_banner' symbol\n");
+		return -ENOENT;
+	}
+
 	elfh_size = sizeof(*ehdr) + MAX_STRTBL_SIZE +
 			(strlen(linux_banner) + 1) +
 			((sizeof(*shdr) + sizeof(*phdr))
@@ -941,12 +947,225 @@ static int msm_minidump_add_header(void)
 	return 0;
 }
 
+/* ========== SYSFS INTERFACE FOR USERSPACE ========== */
+
+
+/**
+ * add_region_store - Add new region from userspace
+ * Format: "name,phys_addr,virt_addr,size"
+ */
+static ssize_t add_region_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct md_region entry;
+	u64 phys_addr, virt_addr, size;
+	char name[MAX_NAME_LENGTH + 1];
+	int ret;
+
+	/* Ensure minidump is initialized before adding regions */
+	if (!smp_load_acquire(&md_init_done))
+		return -EAGAIN;
+
+	ret = sscanf(buf, "%16[^,],%llx,%llx,%llx", name, &phys_addr,
+		     &virt_addr, &size);
+	if (ret != 4) {
+		pr_err("Invalid format. Use: name,phys_addr,virt_addr,size\n");
+		return -EINVAL;
+	}
+
+	if (strlen(name) == 0 || strlen(name) > MAX_NAME_LENGTH)
+		return -EINVAL;
+
+	memset(&entry, 0, sizeof(entry));
+	strscpy(entry.name, name, sizeof(entry.name));
+	entry.phys_addr = phys_addr;
+	entry.virt_addr = virt_addr;
+	entry.size = size;
+	entry.id = 0;
+
+	ret = msm_minidump_add_region(&entry);
+
+	if (ret < 0) {
+		pr_err("Failed to add region '%s': %d\n", name, ret);
+		return ret;
+	}
+
+	pr_info("Added region: %s @ VA:0x%llx PA:0x%llx, size: 0x%llx\n",
+		name, virt_addr, phys_addr, size);
+
+	return count;
+}
+
+/**
+ * list_regions_show - List ALL registered minidump regions
+ */
+static ssize_t list_regions_show(struct device *dev,
+				  struct device_attribute *attr,
+				  char *buf)
+{
+	int i, len = 0;
+	unsigned long flags;
+	struct md_region *mdr;
+	struct md_rm_region *rm_region;
+	struct elfhdr *hdr;
+	struct elf_phdr *phdr;
+	int regno;
+
+	/* Ensure minidump is initialized before listing regions */
+	if (!smp_load_acquire(&md_init_done)) {
+		return scnprintf(buf, PAGE_SIZE,
+				 "Minidump not initialized\n");
+	}
+
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+			 "All Minidump Regions:\n");
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+			 "%-16s %-18s %-18s %-12s\n",
+			 "Name", "VirtAddr", "PhysAddr", "Size");
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+			 "-------------------------------------------------------------\n");
+
+	spin_lock_irqsave(&mdt_lock, flags);
+
+	if (is_rm_minidump) {
+		if (!minidump_rm_table) {
+			spin_unlock_irqrestore(&mdt_lock, flags);
+			return scnprintf(buf, PAGE_SIZE,
+					 "RM minidump table not available\n");
+		}
+		hdr = minidump_elfheader.ehdr;
+		regno = num_regions;
+
+		for (i = 0; i < regno; i++) {
+			rm_region = &minidump_rm_table->entry[i];
+			if (strlen(rm_region->name) == 0)
+				continue;
+
+			phdr = elf_program(hdr, i + 1);
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+					 "%-16s 0x%-16llx 0x%-16llx 0x%-10llx\n",
+					 rm_region->name,
+					 phdr->p_paddr,
+					 phdr->p_vaddr,
+					 phdr->p_filesz);
+
+			if (len >= PAGE_SIZE - 100)
+				break;
+		}
+	} else {
+		if (!minidump_table) {
+			spin_unlock_irqrestore(&mdt_lock, flags);
+			return scnprintf(buf, PAGE_SIZE,
+					 "Minidump table not available\n");
+		}
+		regno = num_regions;
+
+		for (i = 0; i < regno; i++) {
+			mdr = &minidump_table->entry[i];
+			if (strlen(mdr->name) == 0)
+				continue;
+
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+					 "%-16s 0x%-16llx 0x%-16llx 0x%-10llx\n",
+					 mdr->name,
+					 mdr->virt_addr,
+					 mdr->phys_addr,
+					 mdr->size);
+
+			if (len >= PAGE_SIZE - 100)
+				break;
+		}
+	}
+
+	spin_unlock_irqrestore(&mdt_lock, flags);
+
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+			 "\nTotal regions: %d\n", regno);
+
+	return len;
+}
+
+/**
+ * remove_region_store - Remove region by name
+ * Format: "name"
+ */
+static ssize_t remove_region_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	char name[MAX_NAME_LENGTH + 1];
+	struct md_region entry;
+	int ret;
+
+	if (sscanf(buf, "%16s", name) != 1)
+		return -EINVAL;
+
+	/* Get the region details first */
+	entry = md_get_region(name);
+	if (entry.virt_addr == 0) {
+		pr_err("Region '%s' not found\n", name);
+		return -ENOENT;
+	}
+
+	ret = msm_minidump_remove_region(&entry);
+
+	if (ret < 0) {
+		pr_err("Failed to remove region '%s': %d\n", name, ret);
+		return ret;
+	}
+
+	pr_info("Removed region: %s\n", name);
+	return count;
+}
+
+/**
+ * help_show - Show usage help
+ */
+static ssize_t help_show(struct device *dev,
+			 struct device_attribute *attr,
+			 char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE,
+		"Minidump Userspace Interface\n"
+		"=============================\n\n"
+		"List all regions:\n"
+		"  cat list_regions\n\n"
+		"Add new region:\n"
+		"  echo \"name,phys_addr,virt_addr,size\" > add_region\n"
+		"  Example:\n"
+		"    echo \"USERDATA,0x80000000,0xffff800080000000,0x1000\" > add_region\n\n"
+		"Remove region:\n"
+		"  echo \"name\" > remove_region\n"
+		"  Example: echo \"USERDATA\" > remove_region\n\n"
+		"Constraints:\n"
+		"  - Name: max %d characters\n"
+		"  - Address: valid physical DDR, 4-byte aligned\n",
+		MAX_NAME_LENGTH);
+}
+
+static DEVICE_ATTR_WO(add_region);
+static DEVICE_ATTR_RO(list_regions);
+static DEVICE_ATTR_WO(remove_region);
+static DEVICE_ATTR_RO(help);
+
+static struct attribute *minidump_attrs[] = {
+	&dev_attr_add_region.attr,
+	&dev_attr_list_regions.attr,
+	&dev_attr_remove_region.attr,
+	&dev_attr_help.attr,
+	NULL,
+};
+
+static const struct attribute_group minidump_attr_group = {
+	.attrs = minidump_attrs,
+};
+
+/* ========== END SYSFS INTERFACE ========== */
+
 static int msm_minidump_driver_remove(struct platform_device *pdev)
 {
-	/* TO-DO.
-	 *Free the required resources and set the global
-	 * variables as minidump is not initialized.
-	 */
+	sysfs_remove_group(&pdev->dev.kobj, &minidump_attr_group);
 	return 0;
 }
 
@@ -1026,6 +1245,12 @@ static int msm_minidump_driver_probe(struct platform_device *pdev)
 
 	/* First entry would be ELF header */
 	msm_minidump_add_header();
+
+	/* Create sysfs interface */
+	ret = sysfs_create_group(&pdev->dev.kobj, &minidump_attr_group);
+	if (ret)
+		pr_err("Failed to create sysfs group: %d\n", ret);
+
 	/* Add pending entries to HLOS TOC */
 	spin_lock_irqsave(&mdt_lock, flags);
 	/* only need initialize when use smem */
@@ -1091,4 +1316,5 @@ static struct platform_driver msm_minidump_driver = {
 module_platform_driver(msm_minidump_driver);
 
 MODULE_DESCRIPTION("MSM Mini Dump Driver");
+MODULE_IMPORT_NS(MINIDUMP);
 MODULE_LICENSE("GPL v2");
