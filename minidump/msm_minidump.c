@@ -1165,6 +1165,7 @@ static const struct attribute_group minidump_attr_group = {
 
 static int msm_minidump_driver_remove(struct platform_device *pdev)
 {
+	boot_log_dump_exit();
 	sysfs_remove_group(&pdev->dev.kobj, &minidump_attr_group);
 	return 0;
 }

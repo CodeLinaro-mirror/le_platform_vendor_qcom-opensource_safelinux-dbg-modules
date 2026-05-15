@@ -114,6 +114,7 @@ static inline int qcom_va_md_add_region(struct va_md_entry *entry)
 }
 #endif
 
+void boot_log_dump_exit(void);
 struct slabinfo;
 /* Declare pointers to the functions we will be looking up via kallsyms */
 typedef phys_addr_t (*per_cpu_ptr_to_phys_fn)(void *);
