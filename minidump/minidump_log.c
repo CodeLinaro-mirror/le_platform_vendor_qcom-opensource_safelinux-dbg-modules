@@ -71,6 +71,7 @@ struct md_stack_cpu_data {
 static int md_current_stack_init __read_mostly;
 
 static DEFINE_PER_CPU_SHARED_ALIGNED(struct md_stack_cpu_data, md_stack_data);
+static DEFINE_PER_CPU(u64, md_cached_sp);
 
 struct md_suspend_context_data {
 	int task_mdno;
@@ -413,10 +414,12 @@ void md_current_stack_notifer(void *ignore, bool preempt,
 		struct task_struct *prev, struct task_struct *next,
 		unsigned int prev_state)
 {
-	u32 cpu = task_cpu(next);
-	u64 sp = (u64)next->stack;
-
-	update_md_cpu_stack(next, cpu, sp);
+	/*
+	 * Cache the incoming task's stack base with a single store.
+	 * The minidump entries are updated from this cache at panic time.
+	 */
+	if (!is_idle_task(next))
+		WRITE_ONCE(*this_cpu_ptr(&md_cached_sp), (u64)next->stack);
 }
 
 void md_current_stack_ipi_handler(void *data)
@@ -431,6 +434,7 @@ void md_current_stack_ipi_handler(void *data)
 		stack_vm_area = task_stack_vm_area(current);
 		sp = (u64)stack_vm_area->addr;
 	}
+	WRITE_ONCE(*this_cpu_ptr(&md_cached_sp), sp);
 	update_md_cpu_stack(current, cpu, sp);
 }
 
@@ -1147,6 +1151,51 @@ static void md_dump_ktask_stack(void)
 	seq_buf_printf(md_ktask_stack_buf, "---ktask stack end---\n");
 }
 
+/*
+ * md_flush_stack_cache_to_minidump - Update per-CPU minidump stack entries
+ * from the lightweight cache populated by the sched_switch hook.
+ *
+ * Called at panic time. For the panicking CPU, captures the live stack
+ * pointer directly. For all other CPUs, uses the last cached stack base
+ * stored by md_current_stack_notifer() on the most recent context switch.
+ */
+static void md_flush_stack_cache_to_minidump(void)
+{
+	int cpu;
+	u64 sp;
+	struct md_stack_cpu_data *md_stack_cpu_d;
+
+	if (!md_current_stack_init)
+		return;
+
+	for_each_possible_cpu(cpu) {
+		if (cpu == smp_processor_id()) {
+			/* Capture panicking CPU's live stack directly */
+			md_current_stack_ipi_handler(NULL);
+			continue;
+		}
+		sp = READ_ONCE(per_cpu(md_cached_sp, cpu));
+		if (!sp)
+			continue;
+		if (is_vmap_stack) {
+			int i;
+			bool valid = true;
+
+			for (i = 0; i < STACK_NUM_PAGES; i++) {
+				if (!vmalloc_to_page((const void *)(sp + (u64)i * PAGE_SIZE))) {
+					valid = false;
+					break;
+				}
+			}
+			if (!valid)
+				continue;
+		}
+		md_stack_cpu_d = &per_cpu(md_stack_data, cpu);
+		update_md_stack(md_stack_cpu_d->stack_mdr,
+				md_stack_cpu_d->stack_mdidx, sp);
+	}
+}
+
 void md_dump_process(void)
 {
 	if (md_in_oops_handler)
@@ -1154,6 +1203,8 @@ void md_dump_process(void)
 	if (!atomic_add_unless(&md_handle_done, 1, 1))
 		return;
 	md_in_oops_handler = true;
+	md_flush_stack_cache_to_minidump();
+
 	if (!md_cntxt_seq_buf)
 		goto dump_rq;
 	if (raw_smp_processor_id() != die_cpu)
