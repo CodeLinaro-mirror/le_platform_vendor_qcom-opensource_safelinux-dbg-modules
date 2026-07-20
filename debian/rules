@@ -6,7 +6,7 @@ export KDIR := /usr/src/kernel
 export M := $(CURDIR)
 
 override_dh_auto_build:
-	make modules
+	make modules CONFIG_QCOM_MEMORY_DUMP_V21=y
 
 override_dh_auto_install:
 	dh_auto_install --destdir=$(CURDIR)/debian/tmp
