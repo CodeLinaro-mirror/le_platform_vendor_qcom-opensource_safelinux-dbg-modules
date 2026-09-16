@@ -64,6 +64,7 @@ depmod %{kversion_with_debug}
 %{kernel_module_path}/extra/kaslr_store/kaslr_store.ko
 %{kernel_module_path}/extra/memory_dump_v2/memory_dump_v2.ko
 %{kernel_module_path}/extra/xbl_log/dump_boot_log.ko
+%{kernel_module_path}/extra/cpuss_log/qcom_cpuss_log.ko
 
 %changelog
 * Mon Oct 30 2023 Ninad Naik <quic_ninanaik@quicinc.com> 1.0
