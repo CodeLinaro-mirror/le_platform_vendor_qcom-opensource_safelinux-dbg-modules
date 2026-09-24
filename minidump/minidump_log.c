@@ -34,6 +34,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/io.h>
 
 #include <linux/bits.h>
 #include <linux/sched/prio.h>
@@ -1519,6 +1520,67 @@ static void register_pstore_info(void)
 	}
 }
 
+#define DCC_SRAM_SIZE_INFO		0x08
+#define DCC_RAM_KB_SIZE_MASK		GENMASK(8, 0)
+
+static void register_dcc_region(const char *name, u64 phys, u64 size)
+{
+	struct md_region md_entry;
+
+	strscpy(md_entry.name, name, sizeof(md_entry.name));
+	md_entry.phys_addr = phys;
+	md_entry.virt_addr = phys;
+	md_entry.size = ALIGN(size, 4);
+
+	if (msm_minidump_add_region(&md_entry) < 0)
+		pr_err("Failed to add %s in Minidump\n", name);
+}
+
+static void register_dcc_regions(void)
+{
+	struct device_node *node;
+	struct resource cfg_res, sram_res;
+	void __iomem *cfg_base;
+	u32 dcc_offset = 0;
+	u64 sram_phys, sram_size;
+
+	node = of_find_compatible_node(NULL, NULL, "qcom,dcc-v3");
+	if (IS_ERR_OR_NULL(node))
+		node = of_find_compatible_node(NULL, NULL, "qcom,dcc");
+	if (IS_ERR_OR_NULL(node)) {
+		pr_warn("DCC node not found, skip DCC minidump registration\n");
+		return;
+	}
+
+	/* reg[0] = DCC CFG register block, reg[1] = HLOS DCC SRAM window */
+	if (of_address_to_resource(node, 0, &cfg_res) ||
+	    of_address_to_resource(node, 1, &sram_res)) {
+		pr_err("Failed to get DCC reg resources\n");
+		goto out;
+	}
+
+	register_dcc_region("DCC_CFG", cfg_res.start, resource_size(&cfg_res));
+	of_property_read_u32(node, "qcom,dcc-offset", &dcc_offset);
+	sram_phys = sram_res.start - dcc_offset;
+	cfg_base = ioremap(cfg_res.start, resource_size(&cfg_res));
+	if (!cfg_base) {
+		pr_err("Failed to ioremap DCC CFG for SRAM size\n");
+		goto out;
+	}
+
+	sram_size = (u64)(readl(cfg_base + DCC_SRAM_SIZE_INFO) &
+			  DCC_RAM_KB_SIZE_MASK) << 10;
+	iounmap(cfg_base);
+	if (!sram_size) {
+		pr_err("Invalid DCC SRAM size, skip DCC_SRAM region\n");
+		goto out;
+	}
+
+	register_dcc_region("DCC_SRAM", sram_phys, sram_size);
+out:
+	of_node_put(node);
+}
+
 static int boot_log_dump_thread_func(void *arg)
 {
 	size_t text_len;
@@ -1726,6 +1788,7 @@ int msm_minidump_log_init(void)
 	register_current_stack();
 	register_suspend_context();
 	register_pstore_info();
+	register_dcc_regions();
 	md_register_module_data();
 	md_register_panic_data();
 	atomic_notifier_chain_register(&panic_notifier_list, &md_panic_blk);
