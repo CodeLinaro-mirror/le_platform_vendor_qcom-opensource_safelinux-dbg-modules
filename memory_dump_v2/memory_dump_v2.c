@@ -14,7 +14,13 @@
 #include <minidump.h>
 #include <memory_dump.h>
 #include <linux/firmware/qcom/qcom_tzmem.h>
+#include <linux/version.h>
+#include <linux/platform_device.h>
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+#include <dt-bindings/firmware/qcom,scm.h>
+#else
 #include <soc/qcom/secure_buffer.h>
+#endif
 #include <linux/of_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
@@ -1066,8 +1072,10 @@ static int mem_dump_alloc(struct platform_device *pdev)
 	phys_addr_t phys_addr, mini_phys_addr;
 	struct sg_table mem_dump_sgt;
 	void *dump_vaddr, *mini_dump_vaddr;
+#if (KERNEL_VERSION(7, 0, 0) > LINUX_VERSION_CODE)
 	uint32_t ns_vmids[] = {VMID_HLOS};
 	uint32_t ns_vm_perms[] = {PERM_READ | PERM_WRITE};
+#endif
 	u64 shm_bridge_handle;
 	int initialized = 0;
 
@@ -1101,6 +1109,26 @@ static int mem_dump_alloc(struct platform_device *pdev)
 	sg_free_table(&mem_dump_sgt);
 
 	memset(dump_vaddr, 0x0, total_size);
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+	ret = qcom_tzmem_shm_bridge_create(phys_addr, total_size, &shm_bridge_handle);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to create shm bridge.ret=%d\n", ret);
+		return ret;
+	}
+
+	ret = init_memory_dump(dump_vaddr, phys_addr);
+	if (ret) {
+		dev_err(&pdev->dev, "Memory Dump table set up is failed\n");
+		qcom_tzmem_shm_bridge_delete(shm_bridge_handle);
+		return ret;
+	}
+
+	ret = init_memdump_imem_area(total_size);
+	if (ret) {
+		qcom_tzmem_shm_bridge_delete(shm_bridge_handle);
+		return ret;
+	}
+#else
 	ret = qcom_tzmem_register(phys_addr, total_size, ns_vmids,
 			ns_vm_perms, 1, PERM_READ|PERM_WRITE, &shm_bridge_handle);
 	if (ret) {
@@ -1123,6 +1151,7 @@ static int mem_dump_alloc(struct platform_device *pdev)
 			return ret;
 		}
 	}
+#endif
 
 	mini_dump_vaddr = dump_vaddr;
 	mini_phys_addr = phys_addr;

@@ -11,6 +11,7 @@
 #include <linux/slab.h>
 #include <linux/printk.h>
 #include <linux/device.h>
+#include <linux/version.h>
 
 #include "../minidump/minidump.h"
 
@@ -44,7 +45,7 @@ static int build_md_region_from_reg(struct device_node *np,
 
 		mdr->phys_addr = res.start;
 		/* FirmwareVM's mem does not need to be parsed by ramparser */
-		mdr->virt_addr = phys_to_virt(res.start);
+		mdr->virt_addr = (u64)phys_to_virt(res.start);
 		mdr->size      = resource_size(&res);
 		mdr->id        = 0;
 
@@ -113,11 +114,18 @@ static int firmware_vm_mini_dump_probe(struct platform_device *pdev)
 		return 0;
 }
 
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+static void firmware_vm_mini_dump_remove(struct platform_device *pdev)
+{
+		dev_info(&pdev->dev, "driver removed\n");
+}
+#else
 static int firmware_vm_mini_dump_remove(struct platform_device *pdev)
 {
 		dev_info(&pdev->dev, "driver removed\n");
 		return 0;
 }
+#endif
 
 static const struct of_device_id fw_vm_mini_dt_match[] = {
 		{ .compatible = "qcom,firmware-vm-mini-dump" },

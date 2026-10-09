@@ -12,6 +12,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
+#include <linux/version.h>
 
 #define CHAR_WIDTH      8
 #define MAX_IO_SIZE     ((CHAR_WIDTH * sizeof(uint32_t) - 1) / 3 + 1)
@@ -115,6 +116,14 @@ static int nhlos_log_probe(struct platform_device *pdev)
 	return ret;
 }
 
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+static void nhlos_log_remove(struct platform_device *pdev)
+{
+	struct res_info *log_data = platform_get_drvdata(pdev);
+
+	debugfs_remove_recursive(log_data->dbg_dir);
+}
+#else
 static int nhlos_log_remove(struct platform_device *pdev)
 {
 	struct res_info *log_data = platform_get_drvdata(pdev);
@@ -122,6 +131,7 @@ static int nhlos_log_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(log_data->dbg_dir);
 	return 0;
 }
+#endif
 
 static const struct of_device_id nhlos_logs_match_table[] = {
 	{ .compatible = "qcom,nhlos-logs-io", .data = (void *) RES_TYPE_IO},

@@ -1,20 +1,43 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
-*/
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ */
 
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
+#include <linux/version.h>
+#include <asm/memory.h>
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+#include <linux/kallsyms.h>
+#endif
 
 #define KASLR_OFFSET_BIT_MASK   0x00000000FFFFFFFF
 #define KASLR_MAGIC 0xdead4ead
+
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+static u64 kaslr_off_store_offset(void)
+{
+	unsigned long text_addr = kallsyms_lookup_name("_text");
+
+	if (!text_addr)
+		return 0;
+
+	return (u64)text_addr - KIMAGE_VADDR;
+}
+#else
+static u64 kaslr_off_store_offset(void)
+{
+	return kaslr_offset();
+}
+#endif
+
 static int kaslr_off_store_probe(struct platform_device *pdev)
 {
 	void __iomem *base;
-	u64 kaslr_off = kaslr_offset();
+	u64 kaslr_off = kaslr_off_store_offset();
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 

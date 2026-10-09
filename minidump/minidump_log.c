@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/version.h>
 #include <linux/kallsyms.h>
 #include <linux/kthread.h>
 #include <linux/rbtree.h>
@@ -108,9 +109,13 @@ cma_release_fn cma_release_t;
 pcpu_nr_pages_fn pcpu_nr_pages_t;
 get_slabinfo_fn get_slabinfo_t;
 si_swapinfo_fn si_swapinfo_t;
+#if (KERNEL_VERSION(7, 0, 0) > LINUX_VERSION_CODE)
 vmalloc_nr_pages_fn vmalloc_nr_pages_t;
+#endif
+#if IS_ENABLED(CONFIG_PAGE_EXTENSION)
 page_ext_get_fn page_ext_get_t;
 page_ext_put_fn page_ext_put_t;
+#endif
 
 static bool md_in_oops_handler;
 static atomic_t md_handle_done;
@@ -185,9 +190,13 @@ static int lookup_core_kernel_symbols(void)
 	KALLSYMS_LOOKUP_FUNCTION(pcpu_nr_pages);
 	KALLSYMS_LOOKUP_FUNCTION(get_slabinfo);
 	KALLSYMS_LOOKUP_FUNCTION(si_swapinfo);
+#if (KERNEL_VERSION(7, 0, 0) > LINUX_VERSION_CODE)
 	KALLSYMS_LOOKUP_FUNCTION(vmalloc_nr_pages);
+#endif
+#if IS_ENABLED(CONFIG_PAGE_EXTENSION)
 	KALLSYMS_LOOKUP_FUNCTION(page_ext_get);
 	KALLSYMS_LOOKUP_FUNCTION(page_ext_put);
+#endif
 	if (error)
 		return error;
 
@@ -678,7 +687,11 @@ static void md_dump_cgroup_state(char *status, struct sched_entity *se_p,
 		md_dump_task_info(task, status, curr);
 		return;
 	}
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+	nr_running = my_q->nr_queued;
+#else
 	nr_running = my_q->nr_running;
+#endif
 	md_dump_align();
 	seq_buf_printf(md_runq_seq_buf, "%s: %d process is grouping\n",
 				   status, nr_running);
@@ -938,7 +951,11 @@ static void md_dump_runqueues(void)
 			       cpu, rq->nr_running, cpu_curr(cpu)->pid);
 		seq_buf_printf(md_runq_seq_buf,
 			       "CFS has %d process\n",
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+			       cfs->nr_queued);
+#else
 			       cfs->nr_running);
+#endif
 		md_dump_cfs_rq(cfs, cpu_curr(cpu));
 		seq_buf_printf(md_runq_seq_buf,
 			       "RT has %d process\n",
@@ -1717,9 +1734,16 @@ void boot_log_dump_exit(void)
 	boot_log_buf = NULL;
 }
 
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+static void md_kmsg_dump(struct kmsg_dumper *dumper,
+			struct kmsg_dump_detail *detail)
+{
+	enum kmsg_dump_reason reason = detail->reason;
+#else
 static void md_kmsg_dump(struct kmsg_dumper *dumper,
 			enum kmsg_dump_reason reason)
 {
+#endif
 	struct kmsg_dump_iter iter;
 	const char      *why;
 	char *dst = kmsg_buf;
