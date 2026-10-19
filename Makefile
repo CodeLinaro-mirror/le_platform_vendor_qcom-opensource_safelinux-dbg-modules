@@ -19,6 +19,13 @@ endif
 obj-m += nhlos_log/
 obj-m += firmware_vm_mini_dump/
 
+# Enable CPUSS log driver only for SA8797/GEN5 targets based on the config
+# CONFIG_QCOM_CPUSS_LOG.
+ifdef CONFIG_QCOM_CPUSS_LOG
+obj-m += cpuss_log/
+endif
+
+
 all: clean modules
 
 KERNEL_VERSION ?= $(shell uname -r)
