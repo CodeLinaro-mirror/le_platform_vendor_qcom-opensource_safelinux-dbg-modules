@@ -22,7 +22,10 @@
 #include <linux/dma-buf.h>
 #include <linux/dma-resv.h>
 #include <linux/fdtable.h>
+#include <linux/version.h>
+#if (KERNEL_VERSION(7, 0, 0) > LINUX_VERSION_CODE)
 #include <linux/qcom_dma_heap.h>
+#endif
 #include <linux/kallsyms.h>
 #include "minidump_memory.h"
 #include "../../../mm/slab.h"
@@ -145,13 +148,19 @@ static void md_dump_meminfo(struct seq_buf *m)
 #endif
 	show_val_kb(m, "PageTables:     ",
 		    global_node_page_state(NR_PAGETABLE));
+#if (KERNEL_VERSION(7, 0, 0) > LINUX_VERSION_CODE)
 	show_val_kb(m, "Bounce:         ",
 		    global_zone_page_state(NR_BOUNCE));
 	show_val_kb(m, "WritebackTmp:   ",
 		    global_node_page_state(NR_WRITEBACK_TEMP));
+#endif
 	seq_buf_printf(m, "VmallocTotal:   %8lu kB\n",
 		   (unsigned long)VMALLOC_TOTAL >> 10);
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+	show_val_kb(m, "VmallocUsed: ", global_node_page_state(NR_VMALLOC));
+#else
 	show_val_kb(m, "VmallocUsed: ", vmalloc_nr_pages_t());
+#endif
 	show_val_kb(m, "Percpu:         ", pcpu_nr_pages_t());
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
@@ -488,6 +497,9 @@ static inline void md_debugfs_slabowner(struct dentry *minidump_dir) {}
 
 static int get_dma_info(const void *data, struct file *file, unsigned int n)
 {
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+	return 0;
+#else
 	struct priv_buf *buf;
 	struct dma_buf_priv *dma_buf_priv;
 	struct dma_buf *dmabuf;
@@ -535,6 +547,7 @@ static int get_dma_info(const void *data, struct file *file, unsigned int n)
 		return -EINVAL;
 	dma_buf_priv->size += dmabuf->size;
 	return 0;
+#endif
 }
 
 static void md_dma_buf_procs(char *m, size_t dump_size)
@@ -765,4 +778,8 @@ int md_minidump_memory_init(void)
 	md_debugfs_task_memstat(minidump_dir);
 	return error;
 }
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+MODULE_IMPORT_NS("DMA_BUF");
+#else
 MODULE_IMPORT_NS(DMA_BUF);
+#endif

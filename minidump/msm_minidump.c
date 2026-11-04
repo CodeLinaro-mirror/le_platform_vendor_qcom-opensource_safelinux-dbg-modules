@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/version.h>
 #include <linux/err.h>
 #include <linux/elf.h>
 #include <linux/errno.h>
@@ -1168,12 +1169,20 @@ static const struct attribute_group minidump_attr_group = {
 
 /* ========== END SYSFS INTERFACE ========== */
 
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+static void msm_minidump_driver_remove(struct platform_device *pdev)
+{
+	boot_log_dump_exit();
+	sysfs_remove_group(&pdev->dev.kobj, &minidump_attr_group);
+}
+#else
 static int msm_minidump_driver_remove(struct platform_device *pdev)
 {
 	boot_log_dump_exit();
 	sysfs_remove_group(&pdev->dev.kobj, &minidump_attr_group);
 	return 0;
 }
+#endif
 
 static int msm_minidump_driver_probe(struct platform_device *pdev)
 {
@@ -1324,5 +1333,9 @@ static struct platform_driver msm_minidump_driver = {
 module_platform_driver(msm_minidump_driver);
 
 MODULE_DESCRIPTION("MSM Mini Dump Driver");
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+MODULE_IMPORT_NS("MINIDUMP");
+#else
 MODULE_IMPORT_NS(MINIDUMP);
+#endif
 MODULE_LICENSE("GPL v2");

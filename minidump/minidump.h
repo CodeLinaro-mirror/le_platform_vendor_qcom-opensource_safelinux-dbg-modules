@@ -13,6 +13,7 @@
 #include <linux/printk.h>
 #include <linux/stacktrace.h>
 #include <linux/page_ext.h>
+#include <linux/version.h>
 #define CONFIG_MINIDUMP_MAX_ENTRIES 400
 
 enum minidump_entry_cmd {
@@ -139,7 +140,11 @@ extern cma_release_fn cma_release_t;
 extern pcpu_nr_pages_fn pcpu_nr_pages_t;
 extern get_slabinfo_fn get_slabinfo_t;
 extern si_swapinfo_fn si_swapinfo_t;
+#if (KERNEL_VERSION(7, 0, 0) > LINUX_VERSION_CODE)
 extern vmalloc_nr_pages_fn vmalloc_nr_pages_t;
+#endif
+#if IS_ENABLED(CONFIG_PAGE_EXTENSION)
 extern page_ext_get_fn page_ext_get_t;
 extern page_ext_put_fn page_ext_put_t;
+#endif
 #endif

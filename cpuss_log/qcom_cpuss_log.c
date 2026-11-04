@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/kernel.h>
@@ -17,6 +17,7 @@
 #include <linux/scmi_protocol.h>
 #include <linux/qcom_scmi_vendor.h>
 #include <linux/debugfs.h>
+#include <linux/version.h>
 
 #define MAX_PRINT_SIZE		1024
 #define MAX_BUF_NUM		4
@@ -703,7 +704,11 @@ static struct platform_driver cpuss_log_driver = {
 		.of_match_table = cpuss_log,
 	},
 	.probe = cpuss_log_probe,
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+	.remove = cpuss_log_remove,
+#else
 	.remove_new = cpuss_log_remove,
+#endif
 };
 builtin_platform_driver(cpuss_log_driver);
 

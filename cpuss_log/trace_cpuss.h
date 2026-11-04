@@ -11,6 +11,13 @@
 #define TRACE_SYSTEM cpuss
 
 #include <linux/tracepoint.h>
+#include <linux/version.h>
+
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+#define cpuss_assign_str(dst, src) __assign_str(dst)
+#else
+#define cpuss_assign_str(dst, src) __assign_str(dst, src)
+#endif
 
 TRACE_EVENT(cpucp_log,
 
@@ -23,7 +30,7 @@ TRACE_EVENT(cpucp_log,
 	),
 
 	TP_fast_assign(
-		__assign_str(str, str);
+		cpuss_assign_str(str, str);
 	),
 
 	TP_printk("%s\n", __get_str(str))
@@ -40,7 +47,7 @@ TRACE_EVENT(pdp0_log,
 	),
 
 	TP_fast_assign(
-		__assign_str(str, str);
+		cpuss_assign_str(str, str);
 	),
 
 	TP_printk("%s\n", __get_str(str))
@@ -57,7 +64,7 @@ TRACE_EVENT(pdp1_log,
 	),
 
 	TP_fast_assign(
-		__assign_str(str, str);
+		cpuss_assign_str(str, str);
 	),
 
 	TP_printk("%s\n", __get_str(str))
@@ -74,7 +81,7 @@ TRACE_EVENT(pdp2_log,
 	),
 
 	TP_fast_assign(
-		__assign_str(str, str);
+		cpuss_assign_str(str, str);
 	),
 
 	TP_printk("%s\n", __get_str(str))
